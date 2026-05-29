@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-// Charts implemented with inline SVG — no external library needed
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
@@ -1235,30 +1235,23 @@ function TrendChart({ trips, expenses, outsourced, selRS }) {
     const gas = expenses.filter(e=>e.month===mk&&(selRS==="all"||e.razonSocialId===selRS)).reduce((s,e)=>s+e.amount,0)
       +ft.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a+x.amount,0),0)
       +fo.reduce((s,o)=>s+(o.providerAmount||0),0);
-    data.push({mes:lbl,ing:Math.round(ing),gas:Math.round(gas),util:Math.round(ing-gas)});
+    data.push({mes:lbl,Ingresos:Math.round(ing),Gastos:Math.round(gas),Utilidad:Math.round(ing-gas)});
   }
-  const maxVal = Math.max(...data.map(d=>Math.max(d.ing,d.gas,1)));
-  const pct = v => Math.max(2, Math.round((v/maxVal)*100));
+  const fmtK = v => v>=1000?`$${(v/1000).toFixed(0)}k`:`$${v}`;
   return (
     <div className="card mb12">
-      <div className="stitle" style={{fontSize:15,marginBottom:16}}>📈 Tendencia 6 meses</div>
-      <div style={{display:"flex",alignItems:"flex-end",gap:8,height:160,padding:"0 4px"}}>
-        {data.map((d,i)=>(
-          <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,height:"100%",justifyContent:"flex-end"}}>
-            <div style={{width:"100%",display:"flex",gap:2,alignItems:"flex-end",height:"140px"}}>
-              <div title={`Ingresos: ${fmt$(d.ing)}`} style={{flex:1,height:`${pct(d.ing)}%`,background:"#22c55e",borderRadius:"3px 3px 0 0",minHeight:2}}/>
-              <div title={`Gastos: ${fmt$(d.gas)}`} style={{flex:1,height:`${pct(d.gas)}%`,background:"#ef4444",borderRadius:"3px 3px 0 0",minHeight:2}}/>
-              <div title={`Utilidad: ${fmt$(d.util)}`} style={{flex:1,height:`${pct(Math.max(0,d.util))}%`,background:"#f59e0b",borderRadius:"3px 3px 0 0",minHeight:d.util>0?2:0}}/>
-            </div>
-            <div style={{fontSize:10,color:"var(--txt2)",textAlign:"center",marginTop:4}}>{d.mes}</div>
-          </div>
-        ))}
-      </div>
-      <div className="flex gap12 mt8" style={{justifyContent:"center"}}>
-        {[["#22c55e","Ingresos"],["#ef4444","Gastos"],["#f59e0b","Utilidad"]].map(([c,l])=>(
-          <div key={l} className="flex aic gap4 tsm txt2"><span style={{display:"inline-block",width:10,height:10,borderRadius:2,background:c}}/>{l}</div>
-        ))}
-      </div>
+      <div className="stitle" style={{fontSize:15,marginBottom:12}}>📈 Tendencia 6 meses</div>
+      <ResponsiveContainer width="100%" height={200}>
+        <BarChart data={data} margin={{top:0,right:8,left:0,bottom:0}}>
+          <XAxis dataKey="mes" tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false}/>
+          <YAxis tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false} tickFormatter={fmtK}/>
+          <Tooltip formatter={v=>fmt$(v)} contentStyle={{background:"#1c2333",border:"1px solid #30363d",borderRadius:6,fontSize:12}} labelStyle={{color:"#e6edf3",fontWeight:700}}/>
+          <Legend wrapperStyle={{fontSize:12,color:"#8b949e"}}/>
+          <Bar dataKey="Ingresos" fill="#22c55e" radius={[3,3,0,0]}/>
+          <Bar dataKey="Gastos" fill="#ef4444" radius={[3,3,0,0]}/>
+          <Bar dataKey="Utilidad" fill="#f59e0b" radius={[3,3,0,0]}/>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -2378,24 +2371,17 @@ function AdminForecast({ trips, outsourced, expenses }) {
       </div>
       <div className="card mb12">
         <div className="stitle" style={{fontSize:15,marginBottom:12}}>Proyección semanal de efectivo</div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:6,height:160,padding:"0 4px"}}>
-          {weeks.map((w,i)=>{
-            const maxW=Math.max(...weeks.map(x=>Math.max(x.Cobros+(x["Cobros potenciales"]||0),x.Pagos,1)));
-            const pH=v=>Math.max(2,Math.round((v/maxW)*130));
-            return (
-              <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-                <div style={{width:"100%",height:130,display:"flex",gap:2,alignItems:"flex-end"}}>
-                  <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
-                    {w["Cobros potenciales"]>0&&<div title={`Potencial: ${fmt$(w["Cobros potenciales"])}`} style={{width:"100%",height:pH(w["Cobros potenciales"]),background:"#22c55e55",borderRadius:"3px 3px 0 0",minHeight:2}}/>}
-                    {w.Cobros>0&&<div title={`Cobros: ${fmt$(w.Cobros)}`} style={{width:"100%",height:pH(w.Cobros),background:"#22c55e",minHeight:2}}/>}
-                  </div>
-                  <div title={`Pagos: ${fmt$(w.Pagos)}`} style={{flex:1,height:pH(w.Pagos),background:"#ef4444",borderRadius:"3px 3px 0 0",minHeight:w.Pagos>0?2:0}}/>
-                </div>
-                <div style={{fontSize:10,color:"var(--txt2)",textAlign:"center"}}>{w.lbl}</div>
-              </div>
-            );
-          })}
-        </div>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={weeks} margin={{top:0,right:8,left:0,bottom:0}}>
+            <XAxis dataKey="lbl" tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false} tickFormatter={v=>v>=1000?`$${(v/1000).toFixed(0)}k`:`$${v}`}/>
+            <Tooltip formatter={v=>fmt$(v)} contentStyle={{background:"#1c2333",border:"1px solid #30363d",borderRadius:6,fontSize:12}} labelStyle={{color:"#e6edf3",fontWeight:700}}/>
+            <Legend wrapperStyle={{fontSize:12,color:"#8b949e"}}/>
+            <Bar dataKey="Cobros" fill="#22c55e" radius={[3,3,0,0]} stackId="in"/>
+            <Bar dataKey="Cobros potenciales" fill="#22c55e66" radius={[3,3,0,0]} stackId="in"/>
+            <Bar dataKey="Pagos" fill="#ef4444" radius={[3,3,0,0]}/>
+          </BarChart>
+        </ResponsiveContainer>
         <div className="tsm txt2 mt8">🟢 Cobros confirmados · 🟩 Potenciales · 🔴 Pagos a proveedores</div>
       </div>
       <div className="stitle">Detalle por semana</div>
@@ -2470,22 +2456,15 @@ function AdminGastosAnalisis({ trips, expenses, outsourced }) {
       )}
       <div className="card mb12">
         <div className="stitle" style={{fontSize:15,marginBottom:12}}>Composición de gastos por mes</div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:6,height:160,padding:"0 4px"}}>
-          {data.map((d,mi)=>{
-            const total=allCats.reduce((s,c)=>s+(d[c]||0),0)||1;
-            return (
-              <div key={mi} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-                <div style={{width:"100%",height:130,display:"flex",flexDirection:"column",justifyContent:"flex-end",borderRadius:"3px 3px 0 0",overflow:"hidden"}}>
-                  {allCats.map((cat,ci)=>{const v=d[cat]||0;return v>0?<div key={cat} title={`${cat}: ${fmt$(v)}`} style={{width:"100%",height:`${Math.round((v/total)*100)}%`,background:COLORS[ci%COLORS.length],minHeight:2}}/>:null;})}
-                </div>
-                <div style={{fontSize:10,color:"var(--txt2)",textAlign:"center"}}>{d.mes}</div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex gap8 mt8 wrap" style={{justifyContent:"center"}}>
-          {allCats.map((cat,i)=><div key={cat} className="flex aic gap4 tsm txt2"><span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:COLORS[i%COLORS.length]}}/>{cat}</div>)}
-        </div>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={data} margin={{top:0,right:8,left:0,bottom:0}}>
+            <XAxis dataKey="mes" tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fill:"#8b949e",fontSize:11}} axisLine={false} tickLine={false} tickFormatter={v=>v>=1000?`$${(v/1000).toFixed(0)}k`:`$${v}`}/>
+            <Tooltip formatter={v=>fmt$(v)} contentStyle={{background:"#1c2333",border:"1px solid #30363d",borderRadius:6,fontSize:12}} labelStyle={{color:"#e6edf3",fontWeight:700}}/>
+            <Legend wrapperStyle={{fontSize:11,color:"#8b949e"}}/>
+            {allCats.map((cat,i)=><Bar key={cat} dataKey={cat} fill={COLORS[i%COLORS.length]} stackId="a" radius={i===allCats.length-1?[3,3,0,0]:[0,0,0,0]}/>)}
+          </BarChart>
+        </ResponsiveContainer>
       </div>
       <div className="stitle" style={{fontSize:15}}>Detalle por categoría</div>
       <div style={{overflowX:"auto"}}>
