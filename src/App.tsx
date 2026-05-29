@@ -1964,11 +1964,23 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
   const [nc, setNc] = useState({ name: "", rfc: "" });
   const [np, setNp] = useState({ name: "", rfc: "", paymentMethod: "transferencia" });
   const [nr, setNr] = useState({ name: "", rfc: "", short: "" });
+  const [delId, setDelId] = useState(null); // "type:id" for inline confirmation
   const addV = () => { if (!nv.plates || !nv.model) return; onSaveVehicles([...vehicles, { id: genId(), ...nv, active: true }]); setNv({ plates: "", model: "", year: "" }); };
   const addD = () => { if (!nd.name) return; onSaveDrivers([...drivers, { id: genId(), ...nd, active: true }]); setNd({ name: "", license: "" }); };
   const addC = () => { if (!nc.name) return; onSaveClients([...(clients||[]), { id: genId(), ...nc, active: true }]); setNc({ name: "", rfc: "" }); };
   const addP = () => { if (!np.name.trim()) return; onSaveProviders([...(providers||[]), { id: genId(), ...np, active: true }]); setNp({ name: "", rfc: "", paymentMethod: "transferencia" }); };
   const addR = () => { if (!nr.name || !nr.short) return; onSaveRazones([...razones, { id: genId(), ...nr, active: true }]); setNr({ name: "", rfc: "", short: "" }); };
+
+  // Inline confirm delete buttons
+  const DelBtn = ({ uid, onConfirm }) => delId === uid ? (
+    <div className="flex gap4 aic">
+      <span className="tsm" style={{ color: "var(--red)" }}>¿Eliminar?</span>
+      <button className="btn btn-r btn-sm" onClick={() => { onConfirm(); setDelId(null); }}>Sí</button>
+      <button className="btn btn-g btn-sm" onClick={() => setDelId(null)}>No</button>
+    </div>
+  ) : (
+    <button className="btn btn-g btn-sm" title="Eliminar" onClick={() => setDelId(uid)}>🗑</button>
+  );
   return (
     <div className="ap">
       <div className="g2" style={{ gap: 16, marginBottom: 24 }}>
@@ -1994,7 +2006,10 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
               <div key={v.id} className="card">
                 <div className="flex aic jb mb8">
                   <div><div style={{ fontWeight: 700 }}>{v.plates}</div><div className="tsm txt2">{v.model} · {v.year}</div></div>
-                  <button className={`btn btn-sm ${v.active?"btn-g":"btn-a"}`} onClick={() => onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,active:!x.active}:x))}>{v.active?"Desactivar":"Activar"}</button>
+                  <div className="flex gap4">
+                    <button className={`btn btn-sm ${v.active?"btn-g":"btn-a"}`} onClick={() => onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,active:!x.active}:x))}>{v.active?"Desactivar":"Activar"}</button>
+                    <DelBtn uid={`v:${v.id}`} onConfirm={() => onSaveVehicles(vehicles.filter(x=>x.id!==v.id))} />
+                  </div>
                 </div>
                 {interval > 0 && (
                   <div>
@@ -2021,7 +2036,15 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
             <Field label="No. Licencia"><input value={nd.license} onChange={e => setNd(p => ({ ...p, license: e.target.value }))} placeholder="L-001" /></Field>
             <button className="btn btn-a" onClick={addD}><Ico path={IC.plus} size={14} /> Agregar</button>
           </div>
-          <div className="fcol gap8">{drivers.map(d => <div key={d.id} className="card flex aic jb"><div><div style={{ fontWeight: 700 }}>{d.name}</div><div className="tsm txt2">Lic: {d.license}</div></div><button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button></div>)}</div>
+          <div className="fcol gap8">{drivers.map(d => (
+            <div key={d.id} className="card flex aic jb">
+              <div><div style={{ fontWeight: 700 }}>{d.name}</div><div className="tsm txt2">Lic: {d.license || "Sin licencia"}</div></div>
+              <div className="flex gap4">
+                <button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button>
+                <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id))} />
+              </div>
+            </div>
+          ))}</div>
         </div>
       </div>
 
@@ -2046,10 +2069,13 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div style={{ fontWeight: 700 }}>{c.name}</div>
                   {c.rfc && <div className="tsm txt2">RFC: {c.rfc}</div>}
                 </div>
-                <button className={`btn btn-sm ${c.active !== false ? "btn-g" : "btn-a"}`}
-                  onClick={() => onSaveClients((clients||[]).map(x => x.id === c.id ? { ...x, active: x.active === false } : x))}>
-                  {c.active !== false ? "Desactivar" : "Activar"}
-                </button>
+                <div className="flex gap4">
+                  <button className={`btn btn-sm ${c.active !== false ? "btn-g" : "btn-a"}`}
+                    onClick={() => onSaveClients((clients||[]).map(x => x.id === c.id ? { ...x, active: x.active === false } : x))}>
+                    {c.active !== false ? "Desactivar" : "Activar"}
+                  </button>
+                  <DelBtn uid={`c:${c.id}`} onConfirm={() => onSaveClients((clients||[]).filter(x => x.id !== c.id))} />
+                </div>
               </div>
             ))}
           </div>
@@ -2084,10 +2110,13 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div style={{ fontWeight: 700 }}>{p.name}</div>
                   <div className="tsm txt2">{[p.rfc && `RFC: ${p.rfc}`, p.paymentMethod && `Pago: ${p.paymentMethod}`].filter(Boolean).join(" · ")}</div>
                 </div>
-                <button className={`btn btn-sm ${p.active !== false ? "btn-g" : "btn-a"}`}
-                  onClick={() => onSaveProviders((providers||[]).map(x => x.id === p.id ? { ...x, active: x.active === false } : x))}>
-                  {p.active !== false ? "Desactivar" : "Activar"}
-                </button>
+                <div className="flex gap4">
+                  <button className={`btn btn-sm ${p.active !== false ? "btn-g" : "btn-a"}`}
+                    onClick={() => onSaveProviders((providers||[]).map(x => x.id === p.id ? { ...x, active: x.active === false } : x))}>
+                    {p.active !== false ? "Desactivar" : "Activar"}
+                  </button>
+                  <DelBtn uid={`p:${p.id}`} onConfirm={() => onSaveProviders((providers||[]).filter(x => x.id !== p.id))} />
+                </div>
               </div>
             ))}
           </div>
@@ -2104,7 +2133,15 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
           </div>
           <button className="btn btn-a" onClick={addR}><Ico path={IC.plus} size={14} /> Agregar Razón Social</button>
         </div>
-        <div className="fcol gap8">{razones.map(r => <div key={r.id} className="card flex aic jb"><div><div style={{ fontWeight: 700 }}>{r.name}</div><div className="tsm txt2">RFC: {r.rfc} · <span className="rs-pill">{r.short}</span></div></div><button className={`btn btn-sm ${r.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveRazones(razones.map(x => x.id === r.id ? { ...x, active: !x.active } : x))}>{r.active ? "Desactivar" : "Activar"}</button></div>)}</div>
+        <div className="fcol gap8">{razones.map(r => (
+          <div key={r.id} className="card flex aic jb">
+            <div><div style={{ fontWeight: 700 }}>{r.name}</div><div className="tsm txt2">RFC: {r.rfc} · <span className="rs-pill">{r.short}</span></div></div>
+            <div className="flex gap4">
+              <button className={`btn btn-sm ${r.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveRazones(razones.map(x => x.id === r.id ? { ...x, active: !x.active } : x))}>{r.active ? "Desactivar" : "Activar"}</button>
+              <DelBtn uid={`r:${r.id}`} onConfirm={() => onSaveRazones(razones.filter(x => x.id !== r.id))} />
+            </div>
+          </div>
+        ))}</div>
       </div>
     </div>
   );
