@@ -297,7 +297,7 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
     date: today(), origin: "", destination: "", departTime: "", arriveTime: "",
     cargo: "general", vehicleId: vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
     client: "", docNum: "", notes: "", razonSocialId: isChofer ? "" : (razones[0]?.id || ""), patioReg: false,
-    endKm: "",  // Odometer reading at end of trip
+    endKm: "", tripStatus: "completado",  // completado | en_curso
   });
   const [tmpId] = useState(genId);
   const [tripExps, setTripExps] = useState([]);
@@ -342,6 +342,15 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
         <Field label="Odómetro al llegar (km)"><input type="number" placeholder="Ej: 125430" value={f.endKm} onChange={set("endKm")} /></Field>
       </div>
       <Field label="Observaciones"><textarea placeholder="Incidencias, demoras..." value={f.notes} onChange={set("notes")} /></Field>
+      <div className="card" style={{ background: f.tripStatus === "en_curso" ? "#f59e0b11" : "var(--bg3)", border: `1px solid ${f.tripStatus === "en_curso" ? "var(--amber)" : "var(--border)"}`, marginBottom: 12 }}>
+        <div className="flex aic gap10">
+          <ChkBox checked={f.tripStatus === "en_curso"} onChange={() => setF(p => ({ ...p, tripStatus: p.tripStatus === "en_curso" ? "completado" : "en_curso" }))} />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>🔄 Viaje no concluido</div>
+            <div className="tsm txt2">Actívalo si otro chofer u otra unidad continuará el viaje. Quedará disponible para que alguien lo retome.</div>
+          </div>
+        </div>
+      </div>
       <div className="card mt12 mb12">
         <div style={{ fontWeight: 700, marginBottom: 12 }}>📷 Comprobantes</div>
         <div className="g2 gap8">
@@ -484,6 +493,35 @@ function OutsourcedForm({ razones, clients, providers, onSave, onCancel }) {
   );
 }
 
+function DriverSelector({ info, onSelect }) {
+  const [sel, setSel] = useState("");
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{width:"100%",maxWidth:380}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div className="logo" style={{fontSize:38,marginBottom:6}}>⬡ TRANSCONTROL</div>
+          <div className="txt2 tsm">Sistema Integral de Gestión de Transporte</div>
+        </div>
+        <div className="card">
+          <div className="stitle mb4">Selecciona tu perfil</div>
+          <div className="tsm txt2 mb16">Hola <strong>{info.userInfo.nombre}</strong>. Elige tu nombre de la lista para que tus viajes queden registrados correctamente. Solo se pide una vez.</div>
+          <Field label="¿Cuál es tu nombre en el sistema?">
+            <select value={sel} onChange={e => setSel(e.target.value)}>
+              <option value="">-- Selecciona tu nombre --</option>
+              {info.availableDrivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </Field>
+          <button className="btn btn-a mt16" style={{justifyContent:"center",width:"100%"}}
+            onClick={() => { const d = info.availableDrivers.find(x => x.id === sel); if (d) onSelect(d); }}
+            disabled={!sel}>
+            Continuar →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen() {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -521,7 +559,7 @@ function LoginScreen() {
   );
 }
 
-function ChoferHome({ driver, trips, inspections, instructions, onNav, onAck }) {
+function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, onNav, onAck, onRelay }) {
   const td = today(); const mk = nowMon();
   const my = trips.filter(t => t.driverId === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
@@ -555,6 +593,29 @@ function ChoferHome({ driver, trips, inspections, instructions, onNav, onAck }) 
         <div className="card kpi"><div className="kv">{my.filter(t => t.date.startsWith(mk)).length}</div><div className="kl">Este mes</div></div>
         <div className="card kpi"><div className="kv">{my.length}</div><div className="kl">Total</div></div>
       </div>
+      {availableRelays && availableRelays.length > 0 && (
+        <div className="mb16">
+          <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes en curso — disponibles para continuar ({availableRelays.length})</div>
+          {availableRelays.map(t => {
+            const v = vehicles.find(x => x.id === t.vehicleId);
+            return (
+              <div key={t.id} className="card mb8" style={{ borderLeft: "3px solid var(--amber)" }}>
+                <div className="flex aic jb mb6">
+                  <span className="badge ba">En curso</span>
+                  <span className="tsm txt2">{fmtDate(t.date)}</span>
+                </div>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
+                <div className="tsm txt2 mb8">
+                  {t.client && <span>🤝 {t.client} · </span>}
+                  {v && <span>🚛 {v.plates} · </span>}
+                  {(t.legs || []).length > 0 && <span>Tramos: {t.legs.length}</span>}
+                </div>
+                <button className="btn btn-a btn-sm" onClick={() => onRelay(t)}>🔄 Continuar este viaje</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div className="stitle">Acciones rápidas</div>
       <div className="g2 mb16">
         <div className="card card-click" style={{ borderColor: "#f59e0b44" }} onClick={() => onNav("nuevo")}>
@@ -641,12 +702,66 @@ function ChoferMisInspecciones({ driver, inspections, vehicles }) {
   );
 }
 
-function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, clients, instructions, onAdd, onAddIns, onAck, onLogout }) {
+function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
+  const tmpId = trip.id;
+  const av = vehicles.filter(v => v.active);
+  const [f, setF] = useState({
+    vehicleId: av[0]?.id || "",
+    date: today(),
+    startTime: "",
+    notes: "",
+    endKm: "",
+    markComplete: true,
+  });
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  return (
+    <div className="card">
+      <div className="stitle mb8">🔄 Continuar viaje</div>
+      <div className="card mb12" style={{ background: "var(--bg3)" }}>
+        <div className="tsm txt2 mb2">Viaje original:</div>
+        <div style={{ fontWeight: 700 }}>{trip.origin} → {trip.destination}</div>
+        <div className="tsm txt2">{fmtDate(trip.date)} · {trip.client}</div>
+      </div>
+      <div className="g2 mb8">
+        <Field label="Mi unidad *"><select value={f.vehicleId} onChange={set("vehicleId")}>{av.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}</select></Field>
+        <Field label="Fecha de mi tramo"><input type="date" value={f.date} onChange={set("date")} /></Field>
+      </div>
+      <Field label="Hora de inicio (opcional)"><input type="time" value={f.startTime} onChange={set("startTime")} /></Field>
+      <Field label="Odómetro al entregar (km)"><input type="number" placeholder="Ej: 128450" value={f.endKm} onChange={set("endKm")} /></Field>
+      <Field label="Notas del tramo"><textarea placeholder="Punto de entrega, incidencias..." value={f.notes} onChange={set("notes")} rows={2} /></Field>
+      <div className="card mb12" style={{ background: f.markComplete ? "#22c55e11" : "#f59e0b11", border: `1px solid ${f.markComplete ? "var(--green)" : "var(--amber)"}` }}>
+        <div className="flex aic gap10">
+          <ChkBox checked={f.markComplete} onChange={() => setF(p => ({ ...p, markComplete: !p.markComplete }))} />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{f.markComplete ? "✅ Marcar viaje como completado" : "🔄 El viaje continúa en curso"}</div>
+            <div className="tsm txt2">{f.markComplete ? "El viaje queda cerrado al guardar." : "Otro chofer podrá retomarlo después."}</div>
+          </div>
+        </div>
+      </div>
+      <div className="flex gap8">
+        <button className="btn btn-a" style={{ flex: 1, justifyContent: "center" }}
+          onClick={() => {
+            if (!f.vehicleId) return;
+            const leg = { id: genId(), driverId: currentDriver.id, driverName: currentDriver.name, vehicleId: f.vehicleId, date: f.date, startTime: f.startTime, endKm: f.endKm, notes: f.notes };
+            onSave(trip.id, { legs: [...(trip.legs || []), leg], tripStatus: f.markComplete ? "completado" : "en_curso" });
+          }}>
+          {f.markComplete ? "✅ Guardar y completar" : "🔄 Guardar tramo"}
+        </button>
+        <button className="btn btn-g" onClick={onCancel}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, clients, instructions, onAdd, onUpdate, onAddIns, onAck, onLogout }) {
   const [view, setView] = useState("home");
   const [toast, setToast] = useState("");
+  const [relayTrip, setRelayTrip] = useState(null);
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 3000); };
   const av = vehicles.filter(v => v.active);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack).length;
+  // Trips in progress that this driver can pick up (not started by them)
+  const availableRelays = trips.filter(t => t.tripStatus === "en_curso" && t.driverId !== driver?.id && !(t.legs || []).find(l => l.driverId === driver?.id));
   const navTabs = [
     { id: "home", icon: IC.home, lbl: "Inicio" }, { id: "nuevo", icon: IC.plus, lbl: "Viaje" },
     { id: "inspeccion", icon: IC.wrench, lbl: "Inspección" }, { id: "viajes", icon: IC.list, lbl: "Mis Viajes" },
@@ -658,12 +773,22 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
         <div className="logo">⬡ TRANSCONTROL</div>
         <div className="flex aic gap8">
           {pending > 0 && <span className="badge ba">📋 {pending}</span>}
+          {availableRelays.length > 0 && <span className="badge br">🔄 {availableRelays.length}</span>}
           <span className="tsm txt2">{driver.name}</span>
           <button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /></button>
         </div>
       </div>
       {toast && <div className="toast">✓ {toast}</div>}
-      {view === "home" && <ChoferHome driver={driver} trips={trips} inspections={inspections} instructions={instructions} onNav={setView} onAck={onAck} />}
+      {view === "home" && <ChoferHome driver={driver} trips={trips} inspections={inspections} instructions={instructions}
+        availableRelays={availableRelays} vehicles={vehicles} onNav={setView} onAck={onAck}
+        onRelay={t => { setRelayTrip(t); setView("relay"); }} />}
+      {view === "relay" && relayTrip && (
+        <div className="page">
+          <TripContinueForm trip={relayTrip} vehicles={av} currentDriver={driver}
+            onSave={(id, patch) => { onUpdate(id, patch); showToast("Tramo guardado"); setRelayTrip(null); setView("home"); }}
+            onCancel={() => { setRelayTrip(null); setView("home"); }} />
+        </div>
+      )}
       {view === "nuevo" && (
         <div className="page"><div className="stitle mb12">Registrar Nuevo Viaje</div>
           <TripForm drivers={drivers} vehicles={av} razones={razones} clients={clients} currentDriver={driver} isChofer={true}
@@ -1505,7 +1630,9 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                 </div>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
                 <div className="flex gap8 wrap tsm txt2 mb8">
-                  <span>👤 {t.client}</span>{d && <span>{d.name}</span>}{v && <span>🚛 {v.plates}</span>}
+                  {t.client && <span>🤝 {t.client}</span>}
+                  {d ? <span>🧑‍✈️ {d.name}</span> : t.driverId ? <span className="txt2">🧑‍✈️ —</span> : null}
+                  {v && <span>🚛 {v.plates}</span>}
                   {t.docNum && <span>📄 {t.docNum}</span>}{t.invoiceNumber && <span>🧾 {t.invoiceNumber}</span>}
                 </div>
                 <div className="flex aic gap8 wrap">
@@ -2695,6 +2822,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState(null); const [driver, setDriver] = useState(null);
+  const [pendingDriverSelect, setPendingDriverSelect] = useState(null);
   const [trips, setTrips] = useState([]); const [inspections, setInspections] = useState([]);
   const [vehicles, setVehicles] = useState(DEF_VEHICLES); const [drivers, setDrivers] = useState(DEF_DRIVERS);
   const [expenses, setExpenses] = useState([]); const [outsourced, setOutsourced] = useState([]);
@@ -2718,17 +2846,29 @@ export default function App() {
         ld("tr:razones",DEF_RS), ld("tr:clients",[]), ld("tr:providers",[]),
         ld("tr:instructions",[]), ld("tr:schedule",[]),
         ld("tr:instant",{vehicles:[],drivers:[]}),
-      ]).then(([t,i,v,d,e,o,r,cl,prov,ins,sc,inst]) => {
+      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst]) => {
         setTrips(t); setInspections(i); setVehicles(v); setDrivers(d);
         setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
         setInstructions(ins); setSchedule(sc);
         setInstant(inst||{vehicles:[],drivers:[]});
-        // Match driver by name from Firestore so the ID always coincides with saved trips
         if (info.rol === "chofer") {
-          const firestoreDriver = d.find(dr => dr.name === info.nombre && dr.active !== false);
-          setDriver(firestoreDriver || { id: info.id, name: info.nombre, active: true });
+          // 1. Check saved email→driverId mapping in Firestore
+          const emailMap = await ld("tr:email_driver_map", {});
+          const savedId = emailMap[user.email?.toLowerCase()];
+          let matched = savedId ? d.find(dr => dr.id === savedId && dr.active !== false) : null;
+          // 2. Fallback: try to match by exact name
+          if (!matched) matched = d.find(dr => dr.name === info.nombre && dr.active !== false);
+          if (matched) {
+            setDriver(matched);
+            setRole("chofer");
+          } else {
+            // 3. No match — show selector
+            setPendingDriverSelect({ userEmail: user.email?.toLowerCase(), userInfo: info, availableDrivers: d.filter(dr => dr.active !== false) });
+            setRole("select_driver");
+          }
+        } else {
+          setRole(info.rol);
         }
-        setRole(info.rol);
       }).catch(()=>{}).finally(()=>{ clearTimeout(safety); setLoading(false); });
     });
     return () => unsub();
@@ -2763,10 +2903,21 @@ export default function App() {
 
   if (!role) return <LoginScreen />;
 
+  if (role === "select_driver" && pendingDriverSelect) return (
+    <DriverSelector info={pendingDriverSelect} onSelect={async selected => {
+      const emailMap = await ld("tr:email_driver_map", {});
+      emailMap[pendingDriverSelect.userEmail] = selected.id;
+      await sv("tr:email_driver_map", emailMap);
+      setDriver(selected);
+      setPendingDriverSelect(null);
+      setRole("chofer");
+    }} />
+  );
+
   if (role === "chofer") return (
     <ChoferApp driver={driver} trips={trips} inspections={inspections}
       vehicles={vehicles.filter(v => v.active)} drivers={drivers} razones={razones.filter(r => r.active)}
-      clients={clients} instructions={instructions} onAdd={addTrip} onAddIns={addIns} onAck={ackInstruction}
+      clients={clients} instructions={instructions} onAdd={addTrip} onUpdate={updTrip} onAddIns={addIns} onAck={ackInstruction}
       onLogout={() => signOut(auth)} />
   );
 
