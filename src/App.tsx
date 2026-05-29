@@ -2723,9 +2723,13 @@ export default function App() {
         setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
         setInstructions(ins); setSchedule(sc);
         setInstant(inst||{vehicles:[],drivers:[]});
+        // Match driver by name from Firestore so the ID always coincides with saved trips
+        if (info.rol === "chofer") {
+          const firestoreDriver = d.find(dr => dr.name === info.nombre && dr.active !== false);
+          setDriver(firestoreDriver || { id: info.id, name: info.nombre, active: true });
+        }
+        setRole(info.rol);
       }).catch(()=>{}).finally(()=>{ clearTimeout(safety); setLoading(false); });
-      if (info.rol === "chofer") setDriver({ id: info.id, name: info.nombre, active: true });
-      setRole(info.rol);
     });
     return () => unsub();
   }, []);
