@@ -595,22 +595,25 @@ function ChoferHome({ driver, trips, inspections, instructions, availableRelays,
       </div>
       {availableRelays && availableRelays.length > 0 && (
         <div className="mb16">
-          <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes en curso — disponibles para continuar ({availableRelays.length})</div>
+          <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes en curso ({availableRelays.length})</div>
           {availableRelays.map(t => {
             const v = vehicles.find(x => x.id === t.vehicleId);
+            const isOwn = t.driverId === driver?.id;
             return (
-              <div key={t.id} className="card mb8" style={{ borderLeft: "3px solid var(--amber)" }}>
+              <div key={t.id} className="card mb8" style={{ borderLeft: `3px solid ${isOwn ? "var(--green)" : "var(--amber)"}` }}>
                 <div className="flex aic jb mb6">
-                  <span className="badge ba">En curso</span>
+                  <span className={`badge ${isOwn ? "bg" : "ba"}`}>{isOwn ? "✋ Mi viaje" : "🔄 Relevo disponible"}</span>
                   <span className="tsm txt2">{fmtDate(t.date)}</span>
                 </div>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
                 <div className="tsm txt2 mb8">
                   {t.client && <span>🤝 {t.client} · </span>}
                   {v && <span>🚛 {v.plates} · </span>}
-                  {(t.legs || []).length > 0 && <span>Tramos: {t.legs.length}</span>}
+                  {(t.legs || []).length > 0 && <span>{t.legs.length} tramo(s) previo(s)</span>}
                 </div>
-                <button className="btn btn-a btn-sm" onClick={() => onRelay(t)}>🔄 Continuar este viaje</button>
+                <button className="btn btn-a btn-sm" onClick={() => onRelay(t)}>
+                  {isOwn ? "✅ Retomar y completar mi viaje" : "🔄 Continuar este viaje"}
+                </button>
               </div>
             );
           })}
@@ -645,7 +648,10 @@ function ChoferHome({ driver, trips, inspections, instructions, availableRelays,
 }
 
 function ChoferMisViajes({ driver, trips, vehicles }) {
-  const my = [...trips.filter(t => t.driverId === driver.id)].sort((a, b) => b.date.localeCompare(a.date));
+  // Include trips where driver is original OR participated as relay
+  const my = [...trips.filter(t =>
+    t.driverId === driver.id || (t.legs || []).some(l => l.driverId === driver.id)
+  )].sort((a, b) => b.date.localeCompare(a.date));
   if (!my.length) return <div className="page"><Empty title="Sin viajes registrados" sub="Tus viajes aparecerán aquí" /></div>;
   return (
     <div className="page">
@@ -654,15 +660,58 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
         {my.map(t => {
           const v = vehicles.find(x => x.id === t.vehicleId);
           const te = (t.tripExpenses || []).reduce((s, e) => s + e.amount, 0);
+          const legs = t.legs || [];
+          const isRelay = t.driverId !== driver.id; // I'm a relay driver
+          const myLeg = legs.find(l => l.driverId === driver.id);
           return (
             <div key={t.id} className="card">
-              <div className="flex aic jb mb8"><span className="tsm txt2">{fmtDate(t.date)}</span><div className="flex gap4 aic"><CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} /></div></div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
-              <div className="flex gap8 wrap tsm txt2">
-                <span>👤 {t.client}</span>{v && <span>🚛 {v.plates}</span>}
-                {t.docNum && <span>📄 {t.docNum}</span>}
-                {t.departTime && <span>🕐 {t.departTime}{t.arriveTime ? ` — ${t.arriveTime}` : ""}</span>}
+              <div className="flex aic jb mb8">
+                <div className="flex gap4 aic">
+                  <span className="tsm txt2">{fmtDate(t.date)}</span>
+                  {isRelay && <span className="badge ba">🔄 Relevo</span>}
+                  {t.tripStatus === "en_curso" && <span className="badge br">En curso</span>}
+                </div>
+                <div className="flex gap4 aic"><CargoBadge v={t.cargo} /></div>
               </div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
+              <div className="flex gap8 wrap tsm txt2 mb6">
+                {t.client && <span>🤝 {t.client}</span>}
+                {v && <span>🚛 {v.plates}</span>}
+                {t.docNum && <span>📄 {t.docNum}</span>}
+              </div>
+              {/* Show all legs / drivers */}
+              {legs.length > 0 && (
+                <div className="fcol gap4 mb6">
+                  <div className="tsm txt2" style={{ fontWeight: 600 }}>Tramos del viaje:</div>
+                  {/* First leg = original driver */}
+                  <div className="flex aic gap6 tsm" style={{ padding: "4px 8px", background: t.driverId === driver.id ? "var(--bg3)" : "transparent", borderRadius: 4 }}>
+                    <span>🧑‍✈️</span>
+                    <span style={{ fontWeight: t.driverId === driver.id ? 700 : 400 }}>
+                      {t.driverId === driver.id ? "Tú (inicio)" : "Chofer inicial"} — {fmtDate(t.date)}{t.departTime ? ` ${t.departTime}` : ""}{t.arriveTime ? ` → ${t.arriveTime}` : ""}
+                    </span>
+                    {vehicles.find(x => x.id === t.vehicleId) && <span className="txt2">· 🚛 {vehicles.find(x => x.id === t.vehicleId)?.plates}</span>}
+                  </div>
+                  {legs.map((leg, li) => {
+                    const lv = vehicles.find(x => x.id === leg.vehicleId);
+                    const isMe = leg.driverId === driver.id;
+                    return (
+                      <div key={leg.id} className="flex aic gap6 tsm" style={{ padding: "4px 8px", background: isMe ? "var(--bg3)" : "transparent", borderRadius: 4 }}>
+                        <span>🔄</span>
+                        <span style={{ fontWeight: isMe ? 700 : 400 }}>
+                          {isMe ? "Tú (relevo)" : leg.driverName || "Otro chofer"} — {fmtDate(leg.date)}{leg.startTime ? ` ${leg.startTime}` : ""}
+                        </span>
+                        {lv && <span className="txt2">· 🚛 {lv.plates}</span>}
+                        {leg.notes && <span className="txt2">· {leg.notes}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* If no legs yet, show basic timing */}
+              {legs.length === 0 && t.departTime && (
+                <div className="tsm txt2 mb4">🕐 {t.departTime}{t.arriveTime ? ` — ${t.arriveTime}` : ""}</div>
+              )}
+              {myLeg?.endKm && <div className="tsm txt2">🛣 Odómetro: {Number(myLeg.endKm).toLocaleString()} km</div>}
               {te > 0 && <div className="tsm mt4 txt2">💸 Gastos: <span style={{ color: "var(--red)" }}>{fmt$(te)}</span></div>}
               {t.notes && <div className="tsm mt8" style={{ color: "var(--amber)", background: "#f59e0b11", padding: "6px 8px", borderRadius: 6 }}>⚠ {t.notes}</div>}
             </div>
@@ -703,8 +752,8 @@ function ChoferMisInspecciones({ driver, inspections, vehicles }) {
 }
 
 function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
-  const tmpId = trip.id;
   const av = vehicles.filter(v => v.active);
+  const isOwn = trip.driverId === currentDriver?.id;
   const [f, setF] = useState({
     vehicleId: av[0]?.id || "",
     date: today(),
@@ -716,11 +765,12 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   return (
     <div className="card">
-      <div className="stitle mb8">🔄 Continuar viaje</div>
+      <div className="stitle mb8">{isOwn ? "✅ Retomar mi viaje" : "🔄 Continuar viaje"}</div>
       <div className="card mb12" style={{ background: "var(--bg3)" }}>
-        <div className="tsm txt2 mb2">Viaje original:</div>
+        <div className="tsm txt2 mb2">{isOwn ? "Tu viaje incompleto:" : "Viaje original:"}</div>
         <div style={{ fontWeight: 700 }}>{trip.origin} → {trip.destination}</div>
         <div className="tsm txt2">{fmtDate(trip.date)} · {trip.client}</div>
+        {isOwn && <div className="tsm mt4" style={{ color: "var(--green)" }}>✋ Tú iniciaste este viaje — puedes retomarlo y completarlo.</div>}
       </div>
       <div className="g2 mb8">
         <Field label="Mi unidad *"><select value={f.vehicleId} onChange={set("vehicleId")}>{av.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}</select></Field>
@@ -760,8 +810,12 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 3000); };
   const av = vehicles.filter(v => v.active);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack).length;
-  // Trips in progress that this driver can pick up (not started by them)
-  const availableRelays = trips.filter(t => t.tripStatus === "en_curso" && t.driverId !== driver?.id && !(t.legs || []).find(l => l.driverId === driver?.id));
+  // Trips in progress available to continue — includes own trips AND others'
+  // Excludes trips where this driver already added a relay leg
+  const availableRelays = trips.filter(t =>
+    t.tripStatus === "en_curso" &&
+    !(t.legs || []).find(l => l.driverId === driver?.id)
+  );
   const navTabs = [
     { id: "home", icon: IC.home, lbl: "Inicio" }, { id: "nuevo", icon: IC.plus, lbl: "Viaje" },
     { id: "inspeccion", icon: IC.wrench, lbl: "Inspección" }, { id: "viajes", icon: IC.list, lbl: "Mis Viajes" },
@@ -1609,6 +1663,8 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
             const d = gd(t.driverId); const v = gv(t.vehicleId);
             const editing = editAmt[t.id] !== undefined; const isExp = expandedId === t.id;
             const te = (t.tripExpenses || []).reduce((s, e) => s + e.amount, 0);
+            const legs = t.legs || [];
+            const allDriverNames = [d?.name || "—", ...legs.map(l => l.driverName || gd(l.driverId)?.name || "—")].filter((n, i, a) => a.indexOf(n) === i);
             return (
               <div key={t.id} className="card">
                 <div className="flex aic jb mb8 wrap gap4">
@@ -1616,6 +1672,8 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                     <span className="tsm txt2">{fmtDate(t.date)}</span>
                     <CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} />
                     <RSBadge id={t.razonSocialId} razones={razones} />
+                    {t.tripStatus === "en_curso" && <span className="badge br">🔄 En curso</span>}
+                    {legs.length > 0 && <span className="badge ba">🔄 {legs.length + 1} tramos</span>}
                     {t.paymentMethod && <span className="badge bgr">{t.paymentMethod === "efectivo" ? "💵" : "🏦"} {t.paymentMethod}</span>}
                   </div>
                   {delTripId === t.id ? (
@@ -1629,11 +1687,35 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                   )}
                 </div>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
-                <div className="flex gap8 wrap tsm txt2 mb8">
+                <div className="flex gap8 wrap tsm txt2 mb6">
                   {t.client && <span>🤝 {t.client}</span>}
-                  {d ? <span>🧑‍✈️ {d.name}</span> : t.driverId ? <span className="txt2">🧑‍✈️ —</span> : null}
-                  {v && <span>🚛 {v.plates}</span>}
                   {t.docNum && <span>📄 {t.docNum}</span>}{t.invoiceNumber && <span>🧾 {t.invoiceNumber}</span>}
+                </div>
+                {/* Show drivers and vehicles per leg */}
+                <div className="fcol gap3 mb8">
+                  <div className="flex aic gap6 tsm">
+                    <span>🧑‍✈️</span>
+                    <span style={{ fontWeight: 600 }}>{d?.name || "—"}</span>
+                    {v && <span className="txt2">· 🚛 {v.plates}</span>}
+                    <span className="txt2">· {fmtDate(t.date)}{t.departTime ? ` ${t.departTime}` : ""}{t.arriveTime ? ` → ${t.arriveTime}` : ""}</span>
+                    <span className="badge bg" style={{ fontSize: 10 }}>Inicio</span>
+                  </div>
+                  {legs.map((leg, li) => {
+                    const lv = gv(leg.vehicleId);
+                    const ld2 = gd(leg.driverId);
+                    return (
+                      <div key={leg.id} className="flex aic gap6 tsm">
+                        <span>🔄</span>
+                        <span style={{ fontWeight: 600 }}>{leg.driverName || ld2?.name || "—"}</span>
+                        {lv && <span className="txt2">· 🚛 {lv.plates}</span>}
+                        <span className="txt2">· {fmtDate(leg.date)}{leg.startTime ? ` ${leg.startTime}` : ""}</span>
+                        {leg.notes && <span className="txt2">· {leg.notes}</span>}
+                        <span className={`badge ${li === legs.length - 1 && t.tripStatus === "completado" ? "bg" : "ba"}`} style={{ fontSize: 10 }}>
+                          {li === legs.length - 1 && t.tripStatus === "completado" ? "Fin" : `Tramo ${li + 2}`}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="flex aic gap8 wrap">
                   {editing ? (
@@ -1643,7 +1725,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                     </div>
                   ) : (
                     <span style={{ cursor: "pointer", color: t.amount ? "var(--green)" : "var(--txt2)", fontWeight: t.amount ? 700 : 400 }} onClick={() => setEditAmt(p => ({ ...p, [t.id]: String(t.amount || "") }))}>
-                      {t.amount ? fmt$(t.amount) : <span className="tsm">+ Monto cobrado</span>}
+                      {t.amount ? fmt$(t.amount) : <span className="tsm">+ Monto total del viaje</span>}
                     </span>
                   )}
                   {te > 0 && <span className="tsm" style={{ color: "var(--red)" }}>- {fmt$(te)} gastos</span>}
