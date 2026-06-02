@@ -1557,6 +1557,50 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
   );
 }
 
+// ─── IVA HELPERS ─────────────────────────────────────────────────────────────
+function ivaTotal(base, sinFactura, retention) {
+  if (!base || sinFactura) return base || 0;
+  return base * (retention ? 1.12 : 1.16);
+}
+
+function IVACalc({ base, sinFactura, retention, label = "Total a cobrar" }) {
+  if (!base || base <= 0) return null;
+  if (sinFactura) return (
+    <div className="tsm" style={{ color: "var(--txt2)", padding: "4px 0" }}>💵 Sin factura — sin IVA ni retención</div>
+  );
+  const iva = base * 0.16;
+  const ret = retention ? base * 0.04 : 0;
+  const total = base + iva - ret;
+  return (
+    <div style={{ background: "var(--bg3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, marginTop: 6 }}>
+      <div className="flex jb mb4"><span className="txt2">Subtotal (sin IVA):</span><span>{fmt$(base)}</span></div>
+      <div className="flex jb mb4"><span className="txt2">+ IVA 16%:</span><span>{fmt$(iva)}</span></div>
+      {retention && <div className="flex jb mb4"><span style={{ color: "var(--amber)" }}>− Retención IVA 4%:</span><span style={{ color: "var(--amber)" }}>({fmt$(ret)})</span></div>}
+      <div className="flex jb" style={{ fontWeight: 800, borderTop: "1px solid var(--border)", paddingTop: 6, marginTop: 2 }}>
+        <span>{label}:</span>
+        <span style={{ color: "var(--green)", fontSize: 15 }}>{fmt$(total)}</span>
+      </div>
+    </div>
+  );
+}
+
+function IVAToggles({ sinFactura, retention, onToggleSF, onToggleRet }) {
+  return (
+    <div className="fcol gap4 mt8">
+      <div className="flex aic gap8 tsm">
+        <ChkBox checked={!!sinFactura} onChange={onToggleSF} />
+        <span>Sin factura / Efectivo (sin IVA)</span>
+      </div>
+      {!sinFactura && (
+        <div className="flex aic gap8 tsm">
+          <ChkBox checked={!!retention} onChange={onToggleRet} />
+          <span>Retención de IVA 4% (cliente retiene)</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BillingPanel({ trip, onUpdate }) {
   const [invNum, setInvNum] = useState(trip.invoiceNumber || "");
   const save = patch => onUpdate(trip.id, patch);
@@ -1564,6 +1608,15 @@ function BillingPanel({ trip, onUpdate }) {
   return (
     <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 6, padding: 14, marginTop: 8 }}>
       <div className="stitle" style={{ fontSize: 15, marginBottom: 10 }}>💰 Cobranza y facturación SAT</div>
+      {/* IVA breakdown */}
+      {trip.amount > 0 && (
+        <div className="mb12">
+          <IVAToggles sinFactura={trip.sinFactura} retention={trip.ivaRetention}
+            onToggleSF={() => save({ sinFactura: !trip.sinFactura, ivaRetention: false })}
+            onToggleRet={() => save({ ivaRetention: !trip.ivaRetention })} />
+          <IVACalc base={trip.amount} sinFactura={trip.sinFactura} retention={trip.ivaRetention} label="Total a cobrar" />
+        </div>
+      )}
       <div className="g2 mb8">
         <Field label="Forma de pago">
           <select value={trip.paymentMethod || ""} onChange={e => save({ paymentMethod: e.target.value })}>
@@ -1719,14 +1772,28 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                 </div>
                 <div className="flex aic gap8 wrap">
                   {editing ? (
-                    <div className="flex gap4 aic">
-                      <input className="inp-in" type="number" value={editAmt[t.id]} onChange={e => setEditAmt(p => ({ ...p, [t.id]: e.target.value }))} onKeyDown={e => e.key === "Enter" && saveAmt(t.id)} autoFocus />
-                      <button className="btn btn-gr btn-sm" onClick={() => saveAmt(t.id)}>✓</button>
+                    <div className="fcol gap4" style={{ flex: 1 }}>
+                      <div className="flex gap4 aic">
+                        <input className="inp-in" type="number" placeholder="Subtotal sin IVA" value={editAmt[t.id]} onChange={e => setEditAmt(p => ({ ...p, [t.id]: e.target.value }))} onKeyDown={e => e.key === "Enter" && saveAmt(t.id)} autoFocus style={{ flex: 1 }} />
+                        <button className="btn btn-gr btn-sm" onClick={() => saveAmt(t.id)}>✓</button>
+                        <button className="btn btn-g btn-sm" onClick={() => setEditAmt(p => { const n={...p}; delete n[t.id]; return n; })}>✕</button>
+                      </div>
+                      <IVAToggles sinFactura={t.sinFactura} retention={t.ivaRetention}
+                        onToggleSF={() => onUpdate(t.id, { sinFactura: !t.sinFactura, ivaRetention: false })}
+                        onToggleRet={() => onUpdate(t.id, { ivaRetention: !t.ivaRetention })} />
+                      <IVACalc base={parseFloat(editAmt[t.id]||0)} sinFactura={t.sinFactura} retention={t.ivaRetention} />
                     </div>
                   ) : (
-                    <span style={{ cursor: "pointer", color: t.amount ? "var(--green)" : "var(--txt2)", fontWeight: t.amount ? 700 : 400 }} onClick={() => setEditAmt(p => ({ ...p, [t.id]: String(t.amount || "") }))}>
-                      {t.amount ? fmt$(t.amount) : <span className="tsm">+ Monto total del viaje</span>}
-                    </span>
+                    <div className="fcol gap2" style={{ flex: 1 }}>
+                      <span style={{ cursor: "pointer", color: t.amount ? "var(--green)" : "var(--txt2)", fontWeight: t.amount ? 700 : 400 }}
+                        onClick={() => setEditAmt(p => ({ ...p, [t.id]: String(t.amount || "") }))}>
+                        {t.amount ? (
+                          <span>{fmt$(t.amount)} <span className="tsm txt2">subtotal
+                            {!t.sinFactura && <> · Total: <strong style={{ color: "var(--green)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</strong>{t.ivaRetention ? " (c/ret.)" : " +IVA"}</>}
+                          </span></span>
+                        ) : <span className="tsm">+ Subtotal del servicio</span>}
+                      </span>
+                    </div>
                   )}
                   {te > 0 && <span className="tsm" style={{ color: "var(--red)" }}>- {fmt$(te)} gastos</span>}
                   <button className="btn btn-g btn-sm" style={{ marginLeft: "auto" }} onClick={() => setExpandedId(isExp ? null : t.id)}>{isExp ? "▲ Cerrar" : "💰 Cobranza"}</button>
@@ -1909,14 +1976,18 @@ function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDe
                 <div className="tercerizado-split">
                   <div style={{ background: "#22c55e0a", border: "1px solid #22c55e33", borderRadius: 6, padding: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--green)", marginBottom: 4, textTransform: "uppercase" }}>💚 Cobro al cliente</div>
-                    <div style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(o.clientAmount || 0)}</div>
+                    <div style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(o.clientAmount || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
+                    {o.clientAmount > 0 && !o.clientSinFactura && <div className="tsm" style={{ color: "var(--green)" }}>Total: {fmt$(ivaTotal(o.clientAmount, o.clientSinFactura, o.clientIvaRetention))}{o.clientIvaRetention ? " (c/ret.)" : " +IVA"}</div>}
+                    {o.clientSinFactura && <div className="tsm txt2">💵 Sin factura</div>}
                     <div className="tsm txt2">{o.client || "—"}</div>
                     <BillingBadge v={clientBS} />
                     {o.clientInvoiceNum && <div className="tsm txt2">🧾 {o.clientInvoiceNum}</div>}
                   </div>
                   <div style={{ background: "#ef44440a", border: "1px solid #ef444433", borderRadius: 6, padding: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", marginBottom: 4, textTransform: "uppercase" }}>🔴 Costo del proveedor</div>
-                    <div style={{ fontWeight: 700, color: "var(--red)" }}>{fmt$(o.providerAmount || 0)}</div>
+                    <div style={{ fontWeight: 700, color: "var(--red)" }}>{fmt$(o.providerAmount || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
+                    {o.providerAmount > 0 && !o.providerSinFactura && <div className="tsm" style={{ color: "var(--red)" }}>Total: {fmt$(ivaTotal(o.providerAmount, o.providerSinFactura, o.providerIvaRetention))}{o.providerIvaRetention ? " (c/ret.)" : " +IVA"}</div>}
+                    {o.providerSinFactura && <div className="tsm txt2">💵 Sin factura</div>}
                     <div className="tsm txt2">{o.provider || "—"}</div>
                     <span className={`badge ${o.paid ? "bg" : isOver ? "br" : "ba"}`}>{o.paid ? "Pagado" : isOver ? `Vencido ${dias}d` : isSoon ? "Vence pronto" : "Pendiente"}</span>
                     {o.providerInvoiceNum && <div className="tsm txt2">🧾 {o.providerInvoiceNum}</div>}
@@ -1929,6 +2000,10 @@ function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDe
                       <div>
                         <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 8 }}>💚 Lado cliente</div>
                         <div className="fcol gap8">
+                          <IVAToggles sinFactura={o.clientSinFactura} retention={o.clientIvaRetention}
+                            onToggleSF={() => onUpdate(o.id, { clientSinFactura: !o.clientSinFactura, clientIvaRetention: false })}
+                            onToggleRet={() => onUpdate(o.id, { clientIvaRetention: !o.clientIvaRetention })} />
+                          <IVACalc base={o.clientAmount} sinFactura={o.clientSinFactura} retention={o.clientIvaRetention} label="Total a cobrar al cliente" />
                           <Field label="Estado de cobro al cliente">
                             <select value={clientBS} onChange={e => onUpdate(o.id, { clientBillingStatus: e.target.value })}>
                               {BILLING.map(b => <option key={b.v} value={b.v}>{b.l}</option>)}
@@ -1942,6 +2017,10 @@ function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDe
                       <div>
                         <div style={{ fontWeight: 700, color: "var(--red)", marginBottom: 8 }}>🔴 Lado proveedor</div>
                         <div className="fcol gap8">
+                          <IVAToggles sinFactura={o.providerSinFactura} retention={o.providerIvaRetention}
+                            onToggleSF={() => onUpdate(o.id, { providerSinFactura: !o.providerSinFactura, providerIvaRetention: false })}
+                            onToggleRet={() => onUpdate(o.id, { providerIvaRetention: !o.providerIvaRetention })} />
+                          <IVACalc base={o.providerAmount} sinFactura={o.providerSinFactura} retention={o.providerIvaRetention} label="Total a pagar al proveedor" />
                           <div className="flex gap4 wrap">
                             {!o.paid ? <button className="btn btn-gr btn-sm" onClick={() => onUpdate(o.id, { paid: true, paidDate: today() })}>✓ Marcar pagado al proveedor</button>
                               : <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)" }} onClick={() => onUpdate(o.id, { paid: false, paidDate: null })}>↩ Revertir pago</button>}
