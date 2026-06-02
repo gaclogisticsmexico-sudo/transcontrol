@@ -18,6 +18,7 @@ const BILLING = [
   { v: "complemento", l: "Complemento emitido", c: "bb" },
 ];
 const EXP_CATS = ["Combustible", "Mantenimiento", "Peajes", "Viáticos", "Seguro", "Comisión", "Otro"];
+const TRIP_EXP_CATS = ["Comisión", "Combustible", "Casetas", "Llantas / Mecánico", "Pensión / Estadía", "Viáticos", "Seguro", "Otro"];
 const CHECKLIST = [
   { id: "luces_del", l: "Luces delanteras" }, { id: "luces_tra", l: "Luces traseras/stop" },
   { id: "frenos", l: "Frenos" }, { id: "neum", l: "Neumáticos/presión" },
@@ -1221,15 +1222,17 @@ function CoordClientForm({ clients, onSaveClients }) {
   );
 }
 
-function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outsourced, schedule, instructions, inspections, instant, onSaveSchedule, onSaveInstructions, onUpdateInstant, onResolveInspection, onDeleteInspection, onSaveVehicles, onSaveClients, onSaveProviders, onAddOut, onUpdateOut, onDeleteOut, onLogout }) {
+function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outsourced, schedule, instructions, inspections, instant, onSaveSchedule, onSaveInstructions, onUpdateInstant, onResolveInspection, onDeleteInspection, onSaveVehicles, onSaveClients, onSaveProviders, onAddOut, onUpdateOut, onDeleteOut, onUpdate, onLogout }) {
   const [tab, setTab] = useState("avail");
   const pending = instructions.filter(i => !i.ack).length;
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
+  const pendingExpenses = trips.reduce((s, t) => s + (t.tripExpenses || []).filter(e => e.paid !== true).length, 0);
   const tabs = [
     { id: "avail", l: "🟢 Disponibilidad" }, { id: "sched", l: "📅 Programar" },
     { id: "instrs", l: `📨 Instrucciones${pending > 0 ? ` (${pending})` : ""}` },
     { id: "inspect", l: `🔧 Inspecciones${activeIssues > 0 ? ` (${activeIssues})` : ""}` },
     { id: "tercerizados", l: "🔗 Tercerizados" },
+    { id: "gastos-viaje", l: `💸 Gastos viajes${pendingExpenses > 0 ? ` (${pendingExpenses})` : ""}` },
     { id: "odometro", l: "🛣️ Odómetro" },
     { id: "clientes", l: "🤝 Clientes" },
     { id: "proveedores", l: "🚛 Proveedores" },
@@ -1246,6 +1249,27 @@ function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outso
       {tab === "instrs" && <CoordInstructions vehicles={vehicles} drivers={drivers} razones={razones} instructions={instructions} onSaveInstructions={onSaveInstructions} />}
       {tab === "inspect" && <div className="page"><div className="stitle">Inspecciones Físico-Mecánicas</div><InspectionsView inspections={inspections} vehicles={vehicles} drivers={drivers} onResolve={onResolveInspection} onDelete={onDeleteInspection} /></div>}
       {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
+      {tab === "gastos-viaje" && (
+        <div className="page">
+          <div className="stitle">💸 Gastos de Viajes{pendingExpenses > 0 && <span className="badge ba ml8">{pendingExpenses} pendientes</span>}</div>
+          <div className="fcol gap8">
+            {[...trips].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30).map(t => {
+              const expenses = t.tripExpenses || [];
+              const pendCount = expenses.filter(e => e.paid !== true).length;
+              return (
+                <div key={t.id} className="card" style={{ borderLeft: `3px solid ${pendCount > 0 ? "var(--amber)" : "var(--border)"}` }}>
+                  <div className="flex aic jb mb4">
+                    <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+                    <span className="tsm txt2">{fmtDate(t.date)}</span>
+                  </div>
+                  {t.client && <div className="tsm txt2 mb4">🤝 {t.client}</div>}
+                  <TripExpensesManager trip={t} onUpdate={onUpdate} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {tab === "odometro" && <AdminOdometro trips={trips} vehicles={vehicles} onSaveVehicles={onSaveVehicles} />}
       {tab === "clientes" && (
         <div className="page">
@@ -1557,6 +1581,79 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
   );
 }
 
+function TripExpensesManager({ trip, onUpdate }) {
+  const [newE, setNewE] = useState({ cat: "Comisión", desc: "", amount: "", paid: false, paymentMethod: "transferencia" });
+  const [payingId, setPayingId] = useState(null);
+  const [payMethod, setPayMethod] = useState("transferencia");
+  const [delEId, setDelEId] = useState(null);
+  const expenses = trip.tripExpenses || [];
+  const save = patch => onUpdate(trip.id, patch);
+  const addE = () => {
+    const amt = parseFloat(newE.amount);
+    if (!newE.desc || isNaN(amt) || amt <= 0) return;
+    save({ tripExpenses: [...expenses, { id: genId(), cat: newE.cat, desc: newE.desc, amount: amt, paid: newE.paid, paymentMethod: newE.paid ? newE.paymentMethod : "", paidDate: newE.paid ? today() : null }] });
+    setNewE({ cat: "Comisión", desc: "", amount: "", paid: false, paymentMethod: "transferencia" });
+  };
+  const markPaid = id => { save({ tripExpenses: expenses.map(e => e.id === id ? { ...e, paid: true, paidDate: today(), paymentMethod: payMethod } : e) }); setPayingId(null); };
+  const delE = id => { save({ tripExpenses: expenses.filter(e => e.id !== id) }); setDelEId(null); };
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const pending = expenses.filter(e => e.paid !== true).reduce((s, e) => s + e.amount, 0);
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <div className="flex aic jb mb8">
+        <div style={{ fontWeight: 700, fontSize: 14 }}>💸 Gastos del viaje</div>
+        {total > 0 && <span className="tsm txt2">{fmt$(total)} total{pending > 0 ? ` · ` : " · "}<span style={{ color: pending > 0 ? "var(--amber)" : "var(--green)" }}>{pending > 0 ? `${fmt$(pending)} pendiente` : "✓ todo pagado"}</span></span>}
+      </div>
+      {expenses.length === 0 && <div className="tsm txt2 mb8">Sin gastos registrados en este viaje.</div>}
+      {expenses.map(e => (
+        <div key={e.id} className="flex aic jb" style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600 }}>{e.desc}</div>
+            <div className="tsm txt2">{e.cat} · <strong>{fmt$(e.amount)}</strong></div>
+            {e.paid === true
+              ? <div className="tsm" style={{ color: "var(--green)" }}>✓ Pagado{e.paidDate ? ` ${fmtDate(e.paidDate)}` : ""}{e.paymentMethod ? ` · ${e.paymentMethod}` : ""}</div>
+              : payingId === e.id
+                ? <div className="flex gap4 aic mt4">
+                    <select value={payMethod} onChange={ev => setPayMethod(ev.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+                      <option value="transferencia">🏦 Transferencia</option>
+                      <option value="efectivo">💵 Efectivo</option>
+                      <option value="cheque">📝 Cheque</option>
+                    </select>
+                    <button className="btn btn-gr btn-sm" onClick={() => markPaid(e.id)}>✓ Pagar</button>
+                    <button className="btn btn-g btn-sm" onClick={() => setPayingId(null)}>✕</button>
+                  </div>
+                : <button className="btn btn-a btn-sm mt4" onClick={() => { setPayingId(e.id); setPayMethod("transferencia"); }}>Marcar pagado</button>
+            }
+          </div>
+          <div className="flex gap4 aic ml8">
+            <span className={`badge ${e.paid === true ? "bg" : "ba"}`}>{e.paid === true ? "✓ Pagado" : "Pendiente"}</span>
+            {delEId === e.id
+              ? <div className="flex gap4"><span className="tsm" style={{ color: "var(--red)" }}>¿Eliminar?</span><button className="btn btn-r btn-sm" onClick={() => delE(e.id)}>Sí</button><button className="btn btn-g btn-sm" onClick={() => setDelEId(null)}>No</button></div>
+              : <button className="btn btn-g btn-sm" onClick={() => setDelEId(e.id)}>🗑</button>
+            }
+          </div>
+        </div>
+      ))}
+      <div className="mt12" style={{ background: "var(--bg3)", borderRadius: 6, padding: 12 }}>
+        <div className="tsm txt2 mb8" style={{ fontWeight: 700 }}>+ Agregar gasto al viaje</div>
+        <div className="g2 mb6">
+          <Field label="Categoría"><select value={newE.cat} onChange={e => setNewE(p => ({ ...p, cat: e.target.value }))}>{TRIP_EXP_CATS.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+          <Field label="Descripción *"><input placeholder="Ej: Comisión del flete" value={newE.desc} onChange={e => setNewE(p => ({ ...p, desc: e.target.value }))} onKeyDown={e => e.key === "Enter" && addE()} /></Field>
+        </div>
+        <div className="g2 mb8">
+          <Field label="Monto ($) *"><input type="number" placeholder="0.00" value={newE.amount} onChange={e => setNewE(p => ({ ...p, amount: e.target.value }))} /></Field>
+          <Field label="Forma de pago"><select value={newE.paymentMethod} onChange={e => setNewE(p => ({ ...p, paymentMethod: e.target.value }))}><option value="transferencia">🏦 Transferencia</option><option value="efectivo">💵 Efectivo</option><option value="cheque">📝 Cheque</option></select></Field>
+        </div>
+        <div className="flex aic gap8 mb10">
+          <ChkBox checked={newE.paid} onChange={() => setNewE(p => ({ ...p, paid: !p.paid }))} />
+          <span className="tsm">Ya fue pagado al registrar</span>
+        </div>
+        <button className="btn btn-a btn-sm" onClick={addE}><Ico path={IC.plus} size={14} /> Agregar gasto</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── IVA HELPERS ─────────────────────────────────────────────────────────────
 function ivaTotal(base, sinFactura, retention) {
   if (!base || sinFactura) return base || 0;
@@ -1798,7 +1895,12 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                   {te > 0 && <span className="tsm" style={{ color: "var(--red)" }}>- {fmt$(te)} gastos</span>}
                   <button className="btn btn-g btn-sm" style={{ marginLeft: "auto" }} onClick={() => setExpandedId(isExp ? null : t.id)}>{isExp ? "▲ Cerrar" : "💰 Cobranza"}</button>
                 </div>
-                {isExp && <BillingPanel trip={t} onUpdate={onUpdate} />}
+                {isExp && (
+                  <div>
+                    <BillingPanel trip={t} onUpdate={onUpdate} />
+                    <TripExpensesManager trip={t} onUpdate={onUpdate} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2856,20 +2958,83 @@ function AdminOdometro({ trips, vehicles, onSaveVehicles }) {
 }
 
 
-function AdminCuentasProveedor({ outsourced, providers, razones, onUpdate }) {
+function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate, onUpdateOut }) {
   const [search, setSearch] = useState("");
+  const [section, setSection] = useState("proveedores"); // "proveedores" | "gastos-viaje"
+  // Unpaid trip expenses across all trips
+  const pendingTripExp = trips.flatMap(t =>
+    (t.tripExpenses || []).filter(e => e.paid !== true).map(e => ({ ...e, trip: t }))
+  ).sort((a, b) => a.trip.date.localeCompare(b.trip.date));
+  const totalPendingExp = pendingTripExp.reduce((s, e) => s + e.amount, 0);
   const providerNames = [...new Set(outsourced.map(o => o.provider).filter(Boolean))].sort()
     .filter(p => p.toLowerCase().includes(search.toLowerCase()));
   return (
     <div className="ap">
-      <div className="stitle">🚛 Cuentas por Pagar — Por Proveedor</div>
-      <div className="card mb12">
-        <Field label="Buscar proveedor"><input placeholder="Nombre del proveedor..." value={search} onChange={e => setSearch(e.target.value)} /></Field>
+      <div className="flex aic jb mb12 wrap gap8">
+        <div className="stitle" style={{ margin: 0 }}>🚛 Cuentas por Pagar</div>
+        <div className="pill-tabs" style={{ margin: 0 }}>
+          <button className={`pill-tab ${section === "proveedores" ? "act" : ""}`} onClick={() => setSection("proveedores")}>Proveedores tercerizados</button>
+          <button className={`pill-tab ${section === "gastos-viaje" ? "act" : ""}`} onClick={() => setSection("gastos-viaje")}>
+            Gastos de viajes{pendingTripExp.length > 0 && ` (${pendingTripExp.length})`}
+          </button>
+        </div>
       </div>
-      {!providerNames.length ? <Empty title="Sin proveedores" sub="No hay servicios tercerizados registrados" /> : (
-        <div className="fcol gap12">
-          {providerNames.map(prov => {
-            const po = outsourced.filter(o => o.provider === prov);
+
+      {section === "gastos-viaje" && (
+        <div>
+          {pendingTripExp.length === 0 ? <Empty title="Sin gastos pendientes" sub="Todos los gastos de viaje están pagados" /> : (
+            <div>
+              <div className="card mb12 flex aic jb">
+                <span className="tsm txt2">{pendingTripExp.length} gasto(s) pendiente(s)</span>
+                <span style={{ fontWeight: 800, color: "var(--amber)", fontSize: 18 }}>{fmt$(totalPendingExp)}</span>
+              </div>
+              <div className="fcol gap8">
+                {pendingTripExp.map(e => {
+                  const [payM, setPayM] = useState("transferencia");
+                  const [paying, setPaying] = useState(false);
+                  return (
+                    <div key={e.id} className="card flex aic jb" style={{ borderLeft: "3px solid var(--amber)" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700 }}>{e.desc}</div>
+                        <div className="tsm txt2">{e.cat} · <strong>{fmt$(e.amount)}</strong></div>
+                        <div className="tsm txt2">📍 {e.trip.origin} → {e.trip.destination} · {fmtDate(e.trip.date)}</div>
+                        {e.trip.client && <div className="tsm txt2">🤝 {e.trip.client}</div>}
+                        {paying
+                          ? <div className="flex gap4 aic mt6">
+                              <select value={payM} onChange={ev => setPayM(ev.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+                                <option value="transferencia">🏦 Transferencia</option>
+                                <option value="efectivo">💵 Efectivo</option>
+                                <option value="cheque">📝 Cheque</option>
+                              </select>
+                              <button className="btn btn-gr btn-sm" onClick={() => {
+                                const updated = (e.trip.tripExpenses || []).map(x => x.id === e.id ? { ...x, paid: true, paidDate: today(), paymentMethod: payM } : x);
+                                onUpdate(e.trip.id, { tripExpenses: updated });
+                                setPaying(false);
+                              }}>✓ Pagar</button>
+                              <button className="btn btn-g btn-sm" onClick={() => setPaying(false)}>✕</button>
+                            </div>
+                          : <button className="btn btn-a btn-sm mt6" onClick={() => setPaying(true)}>Marcar pagado</button>
+                        }
+                      </div>
+                      <span className="badge ba ml8">Pendiente</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {section === "proveedores" && (
+        <div>
+          <div className="card mb12">
+            <Field label="Buscar proveedor"><input placeholder="Nombre del proveedor..." value={search} onChange={e => setSearch(e.target.value)} /></Field>
+          </div>
+          {!providerNames.length ? <Empty title="Sin proveedores" sub="No hay servicios tercerizados registrados" /> : (
+            <div className="fcol gap12">
+            {providerNames.map(prov => {
+              const po = outsourced.filter(o => o.provider === prov);
             const total = po.reduce((s, o) => s + (o.providerAmount || 0), 0);
             const paid = po.filter(o => o.paid).reduce((s, o) => s + (o.providerAmount || 0), 0);
             const pending = total - paid;
@@ -2928,6 +3093,8 @@ function AdminCuentasProveedor({ outsourced, providers, razones, onUpdate }) {
             );
           })}
         </div>
+        )}
+      </div>
       )}
     </div>
   );
@@ -2967,7 +3134,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
         {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
         {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
-        {tab === "cuentas-prov" && <AdminCuentasProveedor outsourced={outsourced} providers={providers} razones={razones} onUpdate={onUpdateOut} />}
+        {tab === "cuentas-prov" && <AdminCuentasProveedor outsourced={outsourced} providers={providers} razones={razones} trips={trips} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
         {tab === "financiero" && <AdminFinanciero trips={trips} expenses={expenses} outsourced={outsourced} razones={razones} onSaveExpenses={onSaveExpenses} />}
         {tab === "conductores" && <AdminConductores trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} />}
         {tab === "unidades" && <AdminUnidades trips={trips} inspections={inspections} vehicles={vehicles} />}
@@ -3087,7 +3254,7 @@ export default function App() {
       outsourced={outsourced} schedule={schedule} instructions={instructions} inspections={inspections} instant={instant}
       onSaveSchedule={saveSchedule} onSaveInstructions={saveInstructions}
       onUpdateInstant={updateInstant} onSaveVehicles={saveVehicles} onSaveClients={saveClients} onSaveProviders={saveProviders}
-      onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut}
+      onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut} onUpdate={updTrip}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
   );
 
