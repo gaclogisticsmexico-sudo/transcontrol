@@ -736,7 +736,8 @@ function ChoferHome({ driver, trips, inspections, instructions, availableRelays,
 }
 
 function ChoferMisViajes({ driver, trips, vehicles }) {
-  // Include trips where driver is original OR participated as relay
+  const [expanded, setExpanded] = useState({});
+  const toggle = id => setExpanded(p => ({ ...p, [id]: !p[id] }));
   const my = [...trips.filter(t =>
     t.driverId === driver.id || (t.legs || []).some(l => l.driverId === driver.id)
   )].sort((a, b) => b.date.localeCompare(a.date));
@@ -749,59 +750,93 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
           const v = vehicles.find(x => x.id === t.vehicleId);
           const te = (t.tripExpenses || []).reduce((s, e) => s + e.amount, 0);
           const legs = t.legs || [];
-          const isRelay = t.driverId !== driver.id; // I'm a relay driver
-          const myLeg = legs.find(l => l.driverId === driver.id);
+          const isRelay = t.driverId !== driver.id;
+          const isExp = expanded[t.id];
           return (
             <div key={t.id} className="card">
-              <div className="flex aic jb mb8">
-                <div className="flex gap4 aic">
-                  <span className="tsm txt2">{fmtDate(t.date)}</span>
+              {/* Header row — always visible */}
+              <div className="flex aic jb mb6" onClick={() => toggle(t.id)} style={{ cursor: "pointer" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+                  <div className="tsm txt2">{fmtDate(t.date)}{t.client ? ` · 🤝 ${t.client}` : ""}</div>
+                </div>
+                <div className="flex gap6 aic">
                   {isRelay && <span className="badge ba">🔄 Relevo</span>}
                   {t.tripStatus === "en_curso" && <span className="badge br">En curso</span>}
+                  <CargoBadge v={t.cargo} />
+                  <span style={{ color: "var(--txt2)", fontSize: 13 }}>{isExp ? "▲" : "▼"}</span>
                 </div>
-                <div className="flex gap4 aic"><CargoBadge v={t.cargo} /></div>
               </div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
-              <div className="flex gap8 wrap tsm txt2 mb6">
-                {t.client && <span>🤝 {t.client}</span>}
-                {v && <span>🚛 {v.plates}</span>}
-                {t.docNum && <span>📄 {t.docNum}</span>}
-              </div>
-              {/* Show all legs / drivers */}
-              {legs.length > 0 && (
-                <div className="fcol gap4 mb6">
-                  <div className="tsm txt2" style={{ fontWeight: 600 }}>Tramos del viaje:</div>
-                  {/* First leg = original driver */}
-                  <div className="flex aic gap6 tsm" style={{ padding: "4px 8px", background: t.driverId === driver.id ? "var(--bg3)" : "transparent", borderRadius: 4 }}>
-                    <span>🧑‍✈️</span>
-                    <span style={{ fontWeight: t.driverId === driver.id ? 700 : 400 }}>
-                      {t.driverId === driver.id ? "Tú (inicio)" : "Chofer inicial"} — {fmtDate(t.date)}{t.departTime ? ` ${t.departTime}` : ""}{t.arriveTime ? ` → ${t.arriveTime}` : ""}
-                    </span>
-                    {vehicles.find(x => x.id === t.vehicleId) && <span className="txt2">· 🚛 {vehicles.find(x => x.id === t.vehicleId)?.plates}</span>}
-                  </div>
-                  {legs.map((leg, li) => {
-                    const lv = vehicles.find(x => x.id === leg.vehicleId);
-                    const isMe = leg.driverId === driver.id;
-                    return (
-                      <div key={leg.id} className="flex aic gap6 tsm" style={{ padding: "4px 8px", background: isMe ? "var(--bg3)" : "transparent", borderRadius: 4 }}>
-                        <span>🔄</span>
-                        <span style={{ fontWeight: isMe ? 700 : 400 }}>
-                          {isMe ? "Tú (relevo)" : leg.driverName || "Otro chofer"} — {fmtDate(leg.date)}{leg.startTime ? ` ${leg.startTime}` : ""}
+
+              {/* Collapsed summary */}
+              {!isExp && (
+                <div className="flex gap8 wrap tsm txt2">
+                  {v && <span>🚛 {v.plates}</span>}
+                  {t.departTime && <span>🕐 {t.departTime}{t.arriveTime ? `–${t.arriveTime}` : ""}</span>}
+                  {te > 0 && <span style={{ color: "var(--amber)" }}>💸 {fmt$(te)}</span>}
+                </div>
+              )}
+
+              {/* Expanded panel */}
+              {isExp && (
+                <div style={{ paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                  {/* Legs */}
+                  {legs.length > 0 && (
+                    <div className="fcol gap3 mb10">
+                      <div className="tsm txt2" style={{ fontWeight: 700 }}>Tramos:</div>
+                      <div className="flex aic gap6 tsm">
+                        <span>🧑‍✈️</span>
+                        <span style={{ fontWeight: t.driverId === driver.id ? 700 : 400 }}>
+                          {t.driverId === driver.id ? "Tú (inicio)" : "Chofer inicial"}{t.departTime ? ` · ${t.departTime}` : ""}{t.arriveTime ? `–${t.arriveTime}` : ""}
                         </span>
-                        {lv && <span className="txt2">· 🚛 {lv.plates}</span>}
-                        {leg.notes && <span className="txt2">· {leg.notes}</span>}
+                        {v && <span className="txt2">· 🚛 {v.plates}</span>}
                       </div>
-                    );
-                  })}
+                      {legs.map(leg => {
+                        const lv = vehicles.find(x => x.id === leg.vehicleId);
+                        const isMe = leg.driverId === driver.id;
+                        return (
+                          <div key={leg.id} className="flex aic gap6 tsm">
+                            <span>🔄</span>
+                            <span style={{ fontWeight: isMe ? 700 : 400 }}>
+                              {isMe ? "Tú (relevo)" : leg.driverName || "Otro chofer"}{leg.startTime ? ` · ${leg.startTime}` : ""}
+                            </span>
+                            {lv && <span className="txt2">· 🚛 {lv.plates}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Vehicle and basic info */}
+                  <div className="g2 mb10 tsm txt2">
+                    {v && <span>🚛 {v.plates} — {v.model}</span>}
+                    {t.departTime && <span>🕐 {t.departTime}{t.arriveTime ? ` → ${t.arriveTime}` : ""}</span>}
+                    {t.docNum && <span>📄 {t.docNum}</span>}
+                    {te > 0 && <span style={{ color: "var(--amber)" }}>💸 Gastos: {fmt$(te)}</span>}
+                  </div>
+
+                  {/* 📷 Photos */}
+                  <div style={{ background: "var(--bg3)", borderRadius: 6, padding: "10px 12px", marginBottom: 8 }}>
+                    <div className="tsm" style={{ fontWeight: 700, marginBottom: 8 }}>📷 Fotos del viaje</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8 }}>
+                      <div>
+                        <div className="tsm txt2 mb4">Comprobante entrega</div>
+                        <PhotoBtn label="Ver/subir" photoKey={[t.id, "delivery"]} compact />
+                      </div>
+                      <div>
+                        <div className="tsm txt2 mb4">Patio regulador</div>
+                        <PhotoBtn label="Ver/subir" photoKey={[t.id, "patio"]} compact />
+                      </div>
+                      <div>
+                        <div className="tsm txt2 mb4">Carta porte</div>
+                        <PhotoBtn label="Ver/subir" photoKey={[t.id, "cartaporte"]} compact />
+                      </div>
+                    </div>
+                  </div>
+
+                  {t.notes && <div className="tsm mt4" style={{ color: "var(--amber)", background: "#f59e0b11", padding: "6px 8px", borderRadius: 6 }}>⚠ {t.notes}</div>}
                 </div>
               )}
-              {/* If no legs yet, show basic timing */}
-              {legs.length === 0 && t.departTime && (
-                <div className="tsm txt2 mb4">🕐 {t.departTime}{t.arriveTime ? ` — ${t.arriveTime}` : ""}</div>
-              )}
-              {myLeg?.endKm && <div className="tsm txt2">🛣 Odómetro: {Number(myLeg.endKm).toLocaleString()} km</div>}
-              {te > 0 && <div className="tsm mt4 txt2">💸 Gastos: <span style={{ color: "var(--red)" }}>{fmt$(te)}</span></div>}
-              {t.notes && <div className="tsm mt8" style={{ color: "var(--amber)", background: "#f59e0b11", padding: "6px 8px", borderRadius: 6 }}>⚠ {t.notes}</div>}
             </div>
           );
         })}
@@ -2536,7 +2571,12 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
   const [nc, setNc] = useState({ name: "", rfc: "" });
   const [np, setNp] = useState({ name: "", rfc: "", paymentMethod: "transferencia" });
   const [nr, setNr] = useState({ name: "", rfc: "", short: "" });
-  const [delId, setDelId] = useState(null); // "type:id" for inline confirmation
+  const [delId, setDelId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editData, setEditData] = useState({});
+  const startEdit = (id, data) => { setEditId(id); setEditData({ ...data }); };
+  const cancelEdit = () => { setEditId(null); setEditData({}); };
+  const ed = k => e => setEditData(p => ({ ...p, [k]: e.target.value }));
   const addV = () => { if (!nv.plates || !nv.model) return; onSaveVehicles([...vehicles, { id: genId(), ...nv, active: true }]); setNv({ plates: "", model: "", year: "" }); };
   const addD = () => { if (!nd.name) return; onSaveDrivers([...drivers, { id: genId(), ...nd, active: true }]); setNd({ name: "", license: "", phone: "" }); };
   const addC = () => { if (!nc.name) return; onSaveClients([...(clients||[]), { id: genId(), ...nc, active: true }]); setNc({ name: "", rfc: "" }); };
@@ -2576,26 +2616,44 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
             const maintColor = pct >= 100 ? "var(--red)" : pct >= 85 ? "var(--amber)" : "var(--green)";
             return (
               <div key={v.id} className="card">
-                <div className="flex aic jb mb8">
-                  <div><div style={{ fontWeight: 700 }}>{v.plates}</div><div className="tsm txt2">{v.model} · {v.year}</div></div>
-                  <div className="flex gap4">
-                    <button className={`btn btn-sm ${v.active?"btn-g":"btn-a"}`} onClick={() => onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,active:!x.active}:x))}>{v.active?"Desactivar":"Activar"}</button>
-                    <DelBtn uid={`v:${v.id}`} onConfirm={() => onSaveVehicles(vehicles.filter(x=>x.id!==v.id))} />
-                  </div>
-                </div>
-                {interval > 0 && (
-                  <div>
-                    <div className="flex aic jb tsm txt2 mb4">
-                      <span>Mantenimiento: {kmSince > 0 ? `${kmSince.toLocaleString()} / ${interval.toLocaleString()} km` : `Intervalo: ${interval.toLocaleString()} km`}</span>
-                      <span style={{ fontWeight:700, color:maintColor }}>{pct}%</span>
+                {editId === v.id ? (
+                  <div className="fcol gap6">
+                    <div className="g2">
+                      <Field label="Placas *"><input value={editData.plates||""} onChange={ed("plates")} /></Field>
+                      <Field label="Modelo"><input value={editData.model||""} onChange={ed("model")} /></Field>
+                      <Field label="Año"><input value={editData.year||""} onChange={ed("year")} /></Field>
+                      <Field label="Km mantenimiento"><input type="number" value={editData.maintenanceKm||""} onChange={ed("maintenanceKm")} placeholder="30000" /></Field>
                     </div>
-                    <div className="prog mb8"><div className="progf" style={{width:`${pct}%`,background:maintColor}}/></div>
-                    {curKm > 0 && <div className="tsm txt2 mb4">Odómetro actual: <strong>{curKm.toLocaleString()} km</strong></div>}
-                    <button className="btn btn-gr btn-sm" onClick={() => {
-                      const km = prompt(`Km del odómetro al momento del mantenimiento (actual ~${curKm.toLocaleString()})?`);
-                      if (km && !isNaN(Number(km))) onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,lastMaintenanceKm:Number(km)}:x));
-                    }}>✓ Registrar mantenimiento realizado</button>
+                    <div className="flex gap4">
+                      <button className="btn btn-a btn-sm" onClick={() => { onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,...editData,maintenanceKm:Number(editData.maintenanceKm)||0}:x)); cancelEdit(); }}>✓ Guardar</button>
+                      <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    <div className="flex aic jb mb8">
+                      <div><div style={{ fontWeight: 700 }}>{v.plates}</div><div className="tsm txt2">{v.model} · {v.year}</div></div>
+                      <div className="flex gap4">
+                        <button className="btn btn-g btn-sm" onClick={() => startEdit(v.id, v)}>✏️</button>
+                        <button className={`btn btn-sm ${v.active?"btn-g":"btn-a"}`} onClick={() => onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,active:!x.active}:x))}>{v.active?"Desactivar":"Activar"}</button>
+                        <DelBtn uid={`v:${v.id}`} onConfirm={() => onSaveVehicles(vehicles.filter(x=>x.id!==v.id))} />
+                      </div>
+                    </div>
+                    {interval > 0 && (
+                      <div>
+                        <div className="flex aic jb tsm txt2 mb4">
+                          <span>Mantenimiento: {kmSince > 0 ? `${kmSince.toLocaleString()} / ${interval.toLocaleString()} km` : `Intervalo: ${interval.toLocaleString()} km`}</span>
+                          <span style={{ fontWeight:700, color:maintColor }}>{pct}%</span>
+                        </div>
+                        <div className="prog mb8"><div className="progf" style={{width:`${pct}%`,background:maintColor}}/></div>
+                        {curKm > 0 && <div className="tsm txt2 mb4">Odómetro actual: <strong>{curKm.toLocaleString()} km</strong></div>}
+                        <button className="btn btn-gr btn-sm" onClick={() => {
+                          const km = prompt(`Km del odómetro al momento del mantenimiento (actual ~${curKm.toLocaleString()})?`);
+                          if (km && !isNaN(Number(km))) onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,lastMaintenanceKm:Number(km)}:x));
+                        }}>✓ Registrar mantenimiento realizado</button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -2611,15 +2669,30 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
             <button className="btn btn-a" onClick={addD}><Ico path={IC.plus} size={14} /> Agregar</button>
           </div>
           <div className="fcol gap8">{drivers.map(d => (
-            <div key={d.id} className="card flex aic jb">
-              <div>
-                <div style={{ fontWeight: 700 }}>{d.name}</div>
-                <div className="tsm txt2">Lic: {d.license || "Sin licencia"}{d.phone ? ` · 📱 ${d.phone}` : " · Sin WhatsApp"}</div>
-              </div>
-              <div className="flex gap4">
-                <button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button>
-                <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id))} />
-              </div>
+            <div key={d.id} className="card">
+              {editId === d.id ? (
+                <div className="fcol gap6">
+                  <Field label="Nombre *"><input value={editData.name||""} onChange={ed("name")} /></Field>
+                  <Field label="No. Licencia"><input value={editData.license||""} onChange={ed("license")} placeholder="L-001" /></Field>
+                  <Field label="📱 WhatsApp (10 dígitos)"><input type="tel" value={editData.phone||""} onChange={e => setEditData(p=>({...p,phone:e.target.value.replace(/\D/g,'')}))} placeholder="5512345678" maxLength={10} /></Field>
+                  <div className="flex gap4">
+                    <button className="btn btn-a btn-sm" onClick={() => { onSaveDrivers(drivers.map(x=>x.id===d.id?{...x,...editData}:x)); cancelEdit(); }}>✓ Guardar</button>
+                    <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex aic jb">
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{d.name}</div>
+                    <div className="tsm txt2">Lic: {d.license || "Sin licencia"}{d.phone ? ` · 📱 ${d.phone}` : " · Sin WhatsApp"}</div>
+                  </div>
+                  <div className="flex gap4">
+                    <button className="btn btn-g btn-sm" onClick={() => startEdit(d.id, d)}>✏️</button>
+                    <button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button>
+                    <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id))} />
+                  </div>
+                </div>
+              )}
             </div>
           ))}</div>
         </div>
@@ -2641,18 +2714,32 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
         ) : (
           <div className="fcol gap8">
             {(clients || []).map(c => (
-              <div key={c.id} className="card flex aic jb">
-                <div>
-                  <div style={{ fontWeight: 700 }}>{c.name}</div>
-                  {c.rfc && <div className="tsm txt2">RFC: {c.rfc}</div>}
-                </div>
-                <div className="flex gap4">
-                  <button className={`btn btn-sm ${c.active !== false ? "btn-g" : "btn-a"}`}
-                    onClick={() => onSaveClients((clients||[]).map(x => x.id === c.id ? { ...x, active: x.active === false } : x))}>
-                    {c.active !== false ? "Desactivar" : "Activar"}
-                  </button>
-                  <DelBtn uid={`c:${c.id}`} onConfirm={() => onSaveClients((clients||[]).filter(x => x.id !== c.id))} />
-                </div>
+              <div key={c.id} className="card">
+                {editId === c.id ? (
+                  <div className="fcol gap6">
+                    <Field label="Nombre *"><input value={editData.name||""} onChange={ed("name")} /></Field>
+                    <Field label="RFC"><input value={editData.rfc||""} onChange={ed("rfc")} /></Field>
+                    <div className="flex gap4">
+                      <button className="btn btn-a btn-sm" onClick={() => { onSaveClients((clients||[]).map(x=>x.id===c.id?{...x,...editData}:x)); cancelEdit(); }}>✓ Guardar</button>
+                      <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex aic jb">
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{c.name}</div>
+                      {c.rfc && <div className="tsm txt2">RFC: {c.rfc}</div>}
+                    </div>
+                    <div className="flex gap4">
+                      <button className="btn btn-g btn-sm" onClick={() => startEdit(c.id, c)}>✏️</button>
+                      <button className={`btn btn-sm ${c.active !== false ? "btn-g" : "btn-a"}`}
+                        onClick={() => onSaveClients((clients||[]).map(x => x.id === c.id ? { ...x, active: x.active === false } : x))}>
+                        {c.active !== false ? "Desactivar" : "Activar"}
+                      </button>
+                      <DelBtn uid={`c:${c.id}`} onConfirm={() => onSaveClients((clients||[]).filter(x => x.id !== c.id))} />
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2682,18 +2769,39 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
         ) : (
           <div className="fcol gap8">
             {(providers || []).map(p => (
-              <div key={p.id} className="card flex aic jb">
-                <div>
-                  <div style={{ fontWeight: 700 }}>{p.name}</div>
-                  <div className="tsm txt2">{[p.rfc && `RFC: ${p.rfc}`, p.paymentMethod && `Pago: ${p.paymentMethod}`].filter(Boolean).join(" · ")}</div>
-                </div>
-                <div className="flex gap4">
-                  <button className={`btn btn-sm ${p.active !== false ? "btn-g" : "btn-a"}`}
-                    onClick={() => onSaveProviders((providers||[]).map(x => x.id === p.id ? { ...x, active: x.active === false } : x))}>
-                    {p.active !== false ? "Desactivar" : "Activar"}
-                  </button>
-                  <DelBtn uid={`p:${p.id}`} onConfirm={() => onSaveProviders((providers||[]).filter(x => x.id !== p.id))} />
-                </div>
+              <div key={p.id} className="card">
+                {editId === p.id ? (
+                  <div className="fcol gap6">
+                    <Field label="Nombre *"><input value={editData.name||""} onChange={ed("name")} /></Field>
+                    <Field label="RFC"><input value={editData.rfc||""} onChange={ed("rfc")} /></Field>
+                    <Field label="Forma de pago">
+                      <select value={editData.paymentMethod||"transferencia"} onChange={ed("paymentMethod")}>
+                        <option value="transferencia">Transferencia</option>
+                        <option value="efectivo">Efectivo</option>
+                        <option value="cheque">Cheque</option>
+                      </select>
+                    </Field>
+                    <div className="flex gap4">
+                      <button className="btn btn-a btn-sm" onClick={() => { onSaveProviders((providers||[]).map(x=>x.id===p.id?{...x,...editData}:x)); cancelEdit(); }}>✓ Guardar</button>
+                      <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex aic jb">
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{p.name}</div>
+                      <div className="tsm txt2">{[p.rfc && `RFC: ${p.rfc}`, p.paymentMethod && `Pago: ${p.paymentMethod}`].filter(Boolean).join(" · ")}</div>
+                    </div>
+                    <div className="flex gap4">
+                      <button className="btn btn-g btn-sm" onClick={() => startEdit(p.id, p)}>✏️</button>
+                      <button className={`btn btn-sm ${p.active !== false ? "btn-g" : "btn-a"}`}
+                        onClick={() => onSaveProviders((providers||[]).map(x => x.id === p.id ? { ...x, active: x.active === false } : x))}>
+                        {p.active !== false ? "Desactivar" : "Activar"}
+                      </button>
+                      <DelBtn uid={`p:${p.id}`} onConfirm={() => onSaveProviders((providers||[]).filter(x => x.id !== p.id))} />
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2711,12 +2819,29 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
           <button className="btn btn-a" onClick={addR}><Ico path={IC.plus} size={14} /> Agregar Razón Social</button>
         </div>
         <div className="fcol gap8">{razones.map(r => (
-          <div key={r.id} className="card flex aic jb">
-            <div><div style={{ fontWeight: 700 }}>{r.name}</div><div className="tsm txt2">RFC: {r.rfc} · <span className="rs-pill">{r.short}</span></div></div>
-            <div className="flex gap4">
-              <button className={`btn btn-sm ${r.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveRazones(razones.map(x => x.id === r.id ? { ...x, active: !x.active } : x))}>{r.active ? "Desactivar" : "Activar"}</button>
-              <DelBtn uid={`r:${r.id}`} onConfirm={() => onSaveRazones(razones.filter(x => x.id !== r.id))} />
-            </div>
+          <div key={r.id} className="card">
+            {editId === r.id ? (
+              <div className="fcol gap6">
+                <div className="g3">
+                  <Field label="Nombre completo *"><input value={editData.name||""} onChange={ed("name")} /></Field>
+                  <Field label="Nombre corto *"><input value={editData.short||""} onChange={ed("short")} /></Field>
+                  <Field label="RFC"><input value={editData.rfc||""} onChange={ed("rfc")} /></Field>
+                </div>
+                <div className="flex gap4">
+                  <button className="btn btn-a btn-sm" onClick={() => { onSaveRazones(razones.map(x=>x.id===r.id?{...x,...editData}:x)); cancelEdit(); }}>✓ Guardar</button>
+                  <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex aic jb">
+                <div><div style={{ fontWeight: 700 }}>{r.name}</div><div className="tsm txt2">RFC: {r.rfc} · <span className="rs-pill">{r.short}</span></div></div>
+                <div className="flex gap4">
+                  <button className="btn btn-g btn-sm" onClick={() => startEdit(r.id, r)}>✏️</button>
+                  <button className={`btn btn-sm ${r.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveRazones(razones.map(x => x.id === r.id ? { ...x, active: !x.active } : x))}>{r.active ? "Desactivar" : "Activar"}</button>
+                  <DelBtn uid={`r:${r.id}`} onConfirm={() => onSaveRazones(razones.filter(x => x.id !== r.id))} />
+                </div>
+              </div>
+            )}
           </div>
         ))}</div>
       </div>
