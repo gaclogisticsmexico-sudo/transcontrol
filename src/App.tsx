@@ -1360,6 +1360,69 @@ function CoordClientForm({ clients, onSaveClients }) {
   );
 }
 
+function CoordGastosViaje({ trips, onUpdate }) {
+  const [expandedTrips, setExpandedTrips] = useState({});
+  const [showAll, setShowAll] = useState(false);
+  const toggleTrip = id => setExpandedTrips(p => ({ ...p, [id]: !p[id] }));
+  const sorted = [...trips].sort((a, b) => b.date.localeCompare(a.date));
+  const withPending = sorted.filter(t => {
+    if (t.noExtraExpenses) return false;
+    const exp = t.tripExpenses || [];
+    return exp.some(e => e.paid !== true) || exp.length === 0;
+  });
+  const displayed = showAll ? sorted : withPending;
+  return (
+    <div>
+      <div className="pill-tabs mb12" style={{ margin: 0 }}>
+        <button className={`pill-tab ${!showAll ? "act" : ""}`} onClick={() => setShowAll(false)}>Pendientes ({withPending.length})</button>
+        <button className={`pill-tab ${showAll ? "act" : ""}`} onClick={() => setShowAll(true)}>Todos ({sorted.length})</button>
+      </div>
+      <div className="fcol gap4">
+        {displayed.slice(0, 50).map(t => {
+          const expenses = t.tripExpenses || [];
+          const pendCount = expenses.filter(e => e.paid !== true).length;
+          const allPaid = expenses.length > 0 && expenses.every(e => e.paid === true);
+          const isExp = expandedTrips[t.id];
+          const status = t.noExtraExpenses ? "sin-extras" : allPaid ? "pagado" : pendCount > 0 ? "pendiente" : "sin-gastos";
+          const statusColor = status === "sin-extras" || status === "pagado" ? "var(--green)" : status === "pendiente" ? "var(--amber)" : "var(--txt2)";
+          const statusLabel = status === "sin-extras" ? "✓ Sin extras" : status === "pagado" ? "✓ Todo pagado" : status === "pendiente" ? `${pendCount} pendiente(s)` : "Sin gastos";
+          return (
+            <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: `3px solid ${statusColor}` }}>
+              <div className="flex aic jb" onClick={() => toggleTrip(t.id)} style={{ cursor: "pointer" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{t.origin} → {t.destination}</div>
+                  <div className="tsm txt2">{fmtDate(t.date)}{t.client ? ` · 🤝 ${t.client}` : ""}</div>
+                </div>
+                <div className="flex gap6 aic">
+                  <span className="tsm" style={{ color: statusColor, fontWeight: 600 }}>{statusLabel}</span>
+                  {!t.noExtraExpenses && (
+                    <button className="btn btn-g btn-sm" title="Marcar sin gastos extras"
+                      onClick={e => { e.stopPropagation(); onUpdate(t.id, { noExtraExpenses: true }); }}
+                      style={{ fontSize: 11 }}>✓ Sin extras</button>
+                  )}
+                  <span style={{ color: "var(--txt2)", fontSize: 12 }}>{isExp ? "▲" : "▼"}</span>
+                </div>
+              </div>
+              {isExp && !t.noExtraExpenses && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                  <TripExpensesManager trip={t} onUpdate={onUpdate} />
+                </div>
+              )}
+              {isExp && t.noExtraExpenses && (
+                <div className="flex aic gap8 mt8">
+                  <div className="tsm txt2">✓ Marcado sin gastos extras</div>
+                  <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} onClick={() => onUpdate(t.id, { noExtraExpenses: false })}>↩ Reactivar</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {displayed.length === 0 && <Empty title="Sin viajes pendientes" sub="Todos los viajes tienen sus gastos resueltos 🎉" />}
+      </div>
+    </div>
+  );
+}
+
 function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outsourced, schedule, instructions, inspections, instant, onSaveSchedule, onSaveInstructions, onUpdateInstant, onResolveInspection, onDeleteInspection, onSaveVehicles, onSaveClients, onSaveProviders, onAddOut, onUpdateOut, onDeleteOut, onUpdate, onAddStatusRequest, onLogout }) {
   const [tab, setTab] = useState("avail");
   const pending = instructions.filter(i => !i.ack).length;
@@ -1393,69 +1456,7 @@ function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outso
             <div className="stitle" style={{ margin: 0 }}>💸 Gastos de Viajes</div>
             <div className="tsm txt2">{pendingExpenses} pendiente(s)</div>
           </div>
-          {(() => {
-            const [expandedTrips, setExpandedTrips] = useState({});
-            const [showAll, setShowAll] = useState(false);
-            const toggleTrip = id => setExpandedTrips(p => ({ ...p, [id]: !p[id] }));
-            const sorted = [...trips].sort((a, b) => b.date.localeCompare(a.date));
-            const withPending = sorted.filter(t => {
-              if (t.noExtraExpenses) return false;
-              const exp = t.tripExpenses || [];
-              return exp.some(e => e.paid !== true) || exp.length === 0;
-            });
-            const done = sorted.filter(t => t.noExtraExpenses || (t.tripExpenses || []).length > 0 && (t.tripExpenses || []).every(e => e.paid === true));
-            const displayed = showAll ? sorted : withPending;
-            return (
-              <div>
-                <div className="pill-tabs mb12" style={{ margin: 0 }}>
-                  <button className={`pill-tab ${!showAll ? "act" : ""}`} onClick={() => setShowAll(false)}>Pendientes ({withPending.length})</button>
-                  <button className={`pill-tab ${showAll ? "act" : ""}`} onClick={() => setShowAll(true)}>Todos ({sorted.length})</button>
-                </div>
-                <div className="fcol gap4">
-                  {displayed.slice(0, 50).map(t => {
-                    const expenses = t.tripExpenses || [];
-                    const pendCount = expenses.filter(e => e.paid !== true).length;
-                    const allPaid = expenses.length > 0 && expenses.every(e => e.paid === true);
-                    const isExp = expandedTrips[t.id];
-                    const status = t.noExtraExpenses ? "sin-extras" : allPaid ? "pagado" : pendCount > 0 ? "pendiente" : "sin-gastos";
-                    const statusColor = status === "sin-extras" || status === "pagado" ? "var(--green)" : status === "pendiente" ? "var(--amber)" : "var(--txt2)";
-                    const statusLabel = status === "sin-extras" ? "✓ Sin extras" : status === "pagado" ? "✓ Todo pagado" : status === "pendiente" ? `${pendCount} pendiente(s)` : "Sin gastos";
-                    return (
-                      <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: `3px solid ${statusColor}` }}>
-                        <div className="flex aic jb" onClick={() => toggleTrip(t.id)} style={{ cursor: "pointer" }}>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 700, fontSize: 14 }}>{t.origin} → {t.destination}</div>
-                            <div className="tsm txt2">{fmtDate(t.date)}{t.client ? ` · 🤝 ${t.client}` : ""}</div>
-                          </div>
-                          <div className="flex gap6 aic">
-                            <span className="tsm" style={{ color: statusColor, fontWeight: 600 }}>{statusLabel}</span>
-                            {!t.noExtraExpenses && (
-                              <button className="btn btn-g btn-sm" title="Marcar sin gastos extras"
-                                onClick={e => { e.stopPropagation(); onUpdate(t.id, { noExtraExpenses: true }); }}
-                                style={{ fontSize: 11 }}>✓ Sin extras</button>
-                            )}
-                            <span style={{ color: "var(--txt2)", fontSize: 12 }}>{isExp ? "▲" : "▼"}</span>
-                          </div>
-                        </div>
-                        {isExp && !t.noExtraExpenses && (
-                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                            <TripExpensesManager trip={t} onUpdate={onUpdate} />
-                          </div>
-                        )}
-                        {isExp && t.noExtraExpenses && (
-                          <div className="flex aic gap8 mt8">
-                            <div className="tsm txt2">✓ Marcado sin gastos extras</div>
-                            <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} onClick={() => onUpdate(t.id, { noExtraExpenses: false })}>↩ Reactivar</button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {displayed.length === 0 && <Empty title="Sin viajes pendientes" sub="Todos los viajes tienen sus gastos resueltos 🎉" />}
-                </div>
-              </div>
-            );
-          })()}
+          <CoordGastosViaje trips={trips} onUpdate={onUpdate} />
         </div>
       )}
       {tab === "odometro" && <AdminOdometro trips={trips} vehicles={vehicles} onSaveVehicles={onSaveVehicles} />}
@@ -3151,6 +3152,38 @@ function AdminOdometro({ trips, vehicles, onSaveVehicles }) {
 }
 
 
+function PendingExpenseItem({ e, onUpdate }) {
+  const [payM, setPayM] = useState("transferencia");
+  const [paying, setPaying] = useState(false);
+  return (
+    <div className="card flex aic jb" style={{ borderLeft: "3px solid var(--amber)" }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 700 }}>{e.desc}</div>
+        <div className="tsm txt2">{e.cat} · <strong>{fmt$(e.amount)}</strong></div>
+        <div className="tsm txt2">📍 {e.trip.origin} → {e.trip.destination} · {fmtDate(e.trip.date)}</div>
+        {e.trip.client && <div className="tsm txt2">🤝 {e.trip.client}</div>}
+        {paying
+          ? <div className="flex gap4 aic mt6">
+              <select value={payM} onChange={ev => setPayM(ev.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+                <option value="transferencia">🏦 Transferencia</option>
+                <option value="efectivo">💵 Efectivo</option>
+                <option value="cheque">📝 Cheque</option>
+              </select>
+              <button className="btn btn-gr btn-sm" onClick={() => {
+                const updated = (e.trip.tripExpenses || []).map(x => x.id === e.id ? { ...x, paid: true, paidDate: today(), paymentMethod: payM } : x);
+                onUpdate(e.trip.id, { tripExpenses: updated });
+                setPaying(false);
+              }}>✓ Pagar</button>
+              <button className="btn btn-g btn-sm" onClick={() => setPaying(false)}>✕</button>
+            </div>
+          : <button className="btn btn-a btn-sm mt6" onClick={() => setPaying(true)}>Marcar pagado</button>
+        }
+      </div>
+      <span className="badge ba ml8">Pendiente</span>
+    </div>
+  );
+}
+
 function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate, onUpdateOut }) {
   const [search, setSearch] = useState("");
   const [section, setSection] = useState("proveedores"); // "proveedores" | "gastos-viaje"
@@ -3182,37 +3215,9 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
                 <span style={{ fontWeight: 800, color: "var(--amber)", fontSize: 18 }}>{fmt$(totalPendingExp)}</span>
               </div>
               <div className="fcol gap8">
-                {pendingTripExp.map(e => {
-                  const [payM, setPayM] = useState("transferencia");
-                  const [paying, setPaying] = useState(false);
-                  return (
-                    <div key={e.id} className="card flex aic jb" style={{ borderLeft: "3px solid var(--amber)" }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700 }}>{e.desc}</div>
-                        <div className="tsm txt2">{e.cat} · <strong>{fmt$(e.amount)}</strong></div>
-                        <div className="tsm txt2">📍 {e.trip.origin} → {e.trip.destination} · {fmtDate(e.trip.date)}</div>
-                        {e.trip.client && <div className="tsm txt2">🤝 {e.trip.client}</div>}
-                        {paying
-                          ? <div className="flex gap4 aic mt6">
-                              <select value={payM} onChange={ev => setPayM(ev.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
-                                <option value="transferencia">🏦 Transferencia</option>
-                                <option value="efectivo">💵 Efectivo</option>
-                                <option value="cheque">📝 Cheque</option>
-                              </select>
-                              <button className="btn btn-gr btn-sm" onClick={() => {
-                                const updated = (e.trip.tripExpenses || []).map(x => x.id === e.id ? { ...x, paid: true, paidDate: today(), paymentMethod: payM } : x);
-                                onUpdate(e.trip.id, { tripExpenses: updated });
-                                setPaying(false);
-                              }}>✓ Pagar</button>
-                              <button className="btn btn-g btn-sm" onClick={() => setPaying(false)}>✕</button>
-                            </div>
-                          : <button className="btn btn-a btn-sm mt6" onClick={() => setPaying(true)}>Marcar pagado</button>
-                        }
-                      </div>
-                      <span className="badge ba ml8">Pendiente</span>
-                    </div>
-                  );
-                })}
+                  {pendingTripExp.map(e => (
+                    <PendingExpenseItem key={e.id} e={e} onUpdate={onUpdate} />
+                  ))}
               </div>
             </div>
           )}
