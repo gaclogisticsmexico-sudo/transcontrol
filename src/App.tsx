@@ -46,8 +46,8 @@ const DEF_RS = [
 
 const fmt$ = v => "$" + Number(v || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = s => s ? new Date(s + "T12:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "-";
-const today = () => new Date().toISOString().slice(0, 10);
-const nowMon = () => new Date().toISOString().slice(0, 7);
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const nowMon = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
 const daysSince = s => s ? Math.floor((Date.now() - new Date(s + "T12:00:00").getTime()) / 864e5) : null;
 const readB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
 // ═══════════════════════════════════════════════════════════════
@@ -560,7 +560,68 @@ function LoginScreen() {
   );
 }
 
-function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, onNav, onAck, onRelay }) {
+function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant }) {
+  const [showSelect, setShowSelect] = useState(false);
+  const [selV, setSelV] = useState(vehicles[0]?.id || "");
+  const isBusy = (instant.drivers || []).includes(driver.id) && !(instant.freeD || []).includes(driver.id);
+  const curVId = (instant.currentVehicle || {})[driver.id];
+  const curV = vehicles.find(v => v.id === curVId);
+  const startTrip = () => {
+    if (!selV) return;
+    onUpdateInstant({
+      ...instant,
+      vehicles: [...new Set([...(instant.vehicles||[]), selV])],
+      drivers: [...new Set([...(instant.drivers||[]), driver.id])],
+      freeV: (instant.freeV||[]).filter(id => id !== selV),
+      freeD: (instant.freeD||[]).filter(id => id !== driver.id),
+      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: selV }
+    });
+    setShowSelect(false);
+  };
+  const endTrip = () => {
+    onUpdateInstant({
+      ...instant,
+      vehicles: (instant.vehicles||[]).filter(id => id !== curVId),
+      drivers: (instant.drivers||[]).filter(id => id !== driver.id),
+      freeD: (instant.freeD||[]).filter(id => id !== driver.id),
+      freeV: (instant.freeV||[]).filter(id => id !== curVId),
+      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: null }
+    });
+  };
+  return (
+    <div className="card mb16" style={{ borderLeft: `4px solid ${isBusy ? "var(--red)" : "var(--green)"}`, background: isBusy ? "#ef444408" : "#22c55e08" }}>
+      <div className="flex aic jb">
+        <div>
+          <div className="tsm txt2 mb4">Mi estado actual</div>
+          <span className={`badge ${isBusy ? "br" : "bg"}`} style={{ fontSize: 14, padding: "6px 12px" }}>
+            {isBusy ? "🔴 En viaje" : "🟢 Disponible"}
+          </span>
+          {isBusy && curV && <div className="tsm txt2 mt6">🚛 {curV.plates} — {curV.model}</div>}
+        </div>
+        {!isBusy
+          ? <button className="btn btn-r" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={() => setShowSelect(!showSelect)}>🚛 Iniciar viaje</button>
+          : <button className="btn btn-gr" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={endTrip}>✅ Finalizar viaje</button>
+        }
+      </div>
+      {showSelect && !isBusy && (
+        <div className="flex gap8 aic mt12" style={{ paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+          <div style={{ flex: 1 }}>
+            <div className="tsm txt2 mb4">Selecciona la unidad que usarás:</div>
+            <select value={selV} onChange={e => setSelV(e.target.value)} style={{ width: "100%" }}>
+              {vehicles.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}
+            </select>
+          </div>
+          <div className="flex gap4 aic" style={{ marginTop: 20 }}>
+            <button className="btn btn-r" onClick={startTrip}>Confirmar</button>
+            <button className="btn btn-g" onClick={() => setShowSelect(false)}>✕</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest }) {
   const td = today(); const mk = nowMon();
   const my = trips.filter(t => t.driverId === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
@@ -594,6 +655,32 @@ function ChoferHome({ driver, trips, inspections, instructions, availableRelays,
         <div className="card kpi"><div className="kv">{my.filter(t => t.date.startsWith(mk)).length}</div><div className="kl">Este mes</div></div>
         <div className="card kpi"><div className="kv">{my.length}</div><div className="kl">Total</div></div>
       </div>
+      {/* Pending status requests from coordinator */}
+      {(statusRequests||[]).filter(r => r.driverId === driver.id && r.status === "pending").map(req => (
+        <div key={req.id} className="card mb12" style={{ borderLeft: "4px solid var(--amber)", background: "#f59e0b0a" }}>
+          <div className="flex gap8 mb8">
+            <span style={{ fontSize: 24 }}>📩</span>
+            <div>
+              <div style={{ fontWeight: 700 }}>Solicitud del coordinador</div>
+              <div className="tsm txt2">{req.message}</div>
+            </div>
+          </div>
+          <div className="flex gap8">
+            <button className="btn btn-gr" style={{ flex: 1, justifyContent: "center" }}
+              onClick={() => onUpdStatusRequest(req.id, { status: "confirmed", respondedAt: new Date().toISOString() })}>
+              ✅ Confirmar
+            </button>
+            <button className="btn btn-g" style={{ flex: 1, justifyContent: "center", color: "var(--red)", borderColor: "var(--red)" }}
+              onClick={() => onUpdStatusRequest(req.id, { status: "rejected", respondedAt: new Date().toISOString() })}>
+              ❌ No, sigo ocupado
+            </button>
+          </div>
+        </div>
+      ))}
+      {/* Driver status panel */}
+      {instant && onUpdateInstant && (
+        <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} />
+      )}
       {availableRelays && availableRelays.length > 0 && (
         <div className="mb16">
           <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes en curso ({availableRelays.length})</div>
@@ -804,7 +891,7 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
   );
 }
 
-function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, clients, instructions, onAdd, onUpdate, onAddIns, onAck, onLogout }) {
+function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, clients, instructions, instant, statusRequests, onAdd, onUpdate, onAddIns, onAck, onUpdateInstant, onUpdStatusRequest, onLogout }) {
   const [view, setView] = useState("home");
   const [toast, setToast] = useState("");
   const [relayTrip, setRelayTrip] = useState(null);
@@ -835,8 +922,9 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
       </div>
       {toast && <div className="toast">✓ {toast}</div>}
       {view === "home" && <ChoferHome driver={driver} trips={trips} inspections={inspections} instructions={instructions}
-        availableRelays={availableRelays} vehicles={vehicles} onNav={setView} onAck={onAck}
-        onRelay={t => { setRelayTrip(t); setView("relay"); }} />}
+        availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests}
+        onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
+        onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest} />}
       {view === "relay" && relayTrip && (
         <div className="page">
           <TripContinueForm trip={relayTrip} vehicles={av} currentDriver={driver}
@@ -962,7 +1050,7 @@ function InspectionsView({ inspections, vehicles, drivers, onResolve, onDelete }
 }
 
 // Coordinator availability with INSTANT toggle
-function CoordAvailability({ vehicles, drivers, schedule, instant, onUpdateInstant }) {
+function CoordAvailability({ vehicles, drivers, schedule, instant, onUpdateInstant, onAddStatusRequest }) {
   const td = today();
   const schedSlots = schedule.filter(s => s.date === td);
   const schedBusyV = schedSlots.map(s => s.vehicleId);
@@ -1054,12 +1142,32 @@ function CoordAvailability({ vehicles, drivers, schedule, instant, onUpdateInsta
                     {isSched && slot && <div className="tsm txt2">📅 {slot.startTime}–{slot.endTime}</div>}
                     {isInstant && <div className="tsm" style={{ color: "var(--red)" }}>🔴 Ocupado manualmente</div>}
                     {isForceFree && <div className="tsm" style={{ color: "var(--green)" }}>🟢 Liberado manualmente</div>}
+                    {(instant.currentVehicle||{})[d.id] && (() => { const cv = vehicles.find(v=>v.id===(instant.currentVehicle||{})[d.id]); return cv ? <div className="tsm" style={{color:"var(--red)"}}>🚛 {cv.plates} (iniciado por chofer)</div> : null; })()}
                   </div>
-                  <div className="flex gap4 aic">
+                  <div className="flex gap4 aic wrap">
                     <span className={`badge ${busy ? "br" : "bg"}`}>{busy ? "Ocupado" : "Libre"}</span>
                     <button className={`btn btn-sm ${busy ? "btn-gr" : "btn-r"}`} onClick={() => toggleD(d.id)}>
                       {busy ? "✓ Liberar" : "Ocupar"}
                     </button>
+                    {onAddStatusRequest && (
+                      <button className="btn btn-g btn-sm" title="Solicitar confirmación al chofer"
+                        onClick={() => onAddStatusRequest({
+                          id: genId(), driverId: d.id, vehicleId: (instant.currentVehicle||{})[d.id] || null,
+                          requestedAction: busy ? "free" : "busy",
+                          message: busy ? `El coordinador solicita que confirmes que ya terminaste tu viaje y estás disponible.` : `El coordinador solicita que confirmes que estás en servicio (ocupado).`,
+                          status: "pending", requestedAt: new Date().toISOString()
+                        })}>
+                        📩
+                      </button>
+                    )}
+                    {d.phone && (() => {
+                      const msg = encodeURIComponent(`*TransControl* 🚛\nHola ${d.name}, el coordinador te solicita que abras la app y confirmes tu estado de disponibilidad.\n\n${busy ? "¿Ya terminaste tu viaje y estás disponible?" : "¿Estás actualmente en servicio?"}`);
+                      return (
+                        <a href={`https://wa.me/521${d.phone}?text=${msg}`} target="_blank" rel="noreferrer" className="btn btn-g btn-sm" title="Enviar WhatsApp al chofer" style={{ textDecoration: "none" }}>
+                          💬
+                        </a>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -1071,15 +1179,29 @@ function CoordAvailability({ vehicles, drivers, schedule, instant, onUpdateInsta
   );
 }
 
-function CoordSchedule({ vehicles, drivers, razones, schedule, onSaveSchedule }) {
+function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onSaveSchedule, onSaveInstructions }) {
   const [selDate, setSelDate] = useState(today());
   const [showForm, setShowForm] = useState(false);
-  const [f, setF] = useState({ vehicleId: vehicles[0]?.id || "", driverId: drivers[0]?.id || "", startTime: "08:00", endTime: "18:00", client: "", cargo: "general", notes: "", razonSocialId: razones[0]?.id || "" });
+  const [f, setF] = useState({ vehicleId: vehicles[0]?.id || "", driverId: drivers[0]?.id || "", startTime: "08:00", endTime: "18:00", client: "", origin: "", destination: "", cargo: "general", notes: "", razonSocialId: razones[0]?.id || "" });
   const slots = schedule.filter(s => s.date === selDate).sort((a, b) => a.startTime.localeCompare(b.startTime));
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const addSlot = () => {
     if (!f.vehicleId || !f.driverId) return;
-    onSaveSchedule([...schedule, { ...f, id: genId(), date: selDate, createdAt: new Date().toISOString() }]);
+    const slot = { ...f, id: genId(), date: selDate, createdAt: new Date().toISOString() };
+    onSaveSchedule([...schedule, slot]);
+    // Auto-generate instruction to driver
+    const v = vehicles.find(x => x.id === f.vehicleId);
+    const lines = [
+      `📋 Viaje programado para el ${fmtDate(selDate)}`,
+      `🚛 Unidad: ${v?.plates || ""} ${v?.model ? `(${v.model})` : ""}`,
+      f.origin || f.destination ? `📍 ${f.origin ? f.origin : ""}${f.origin && f.destination ? " → " : ""}${f.destination ? f.destination : ""}` : null,
+      `🕐 Horario: ${f.startTime} – ${f.endTime}`,
+      f.client ? `🤝 Cliente: ${f.client}` : null,
+      f.notes ? `📝 ${f.notes}` : null,
+    ].filter(Boolean).join("\n");
+    if (onSaveInstructions) {
+      onSaveInstructions([...(instructions || []), { id: genId(), driverId: f.driverId, vehicleId: f.vehicleId, text: lines, date: today(), ack: false, fromSchedule: true }]);
+    }
     setShowForm(false);
   };
   const delSlot = id => onSaveSchedule(schedule.filter(s => s.id !== id));
@@ -1095,12 +1217,28 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, onSaveSchedule })
             <Field label="Conductor"><select value={f.driverId} onChange={set("driverId")}>{drivers.filter(d => d.active).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
             <Field label="Inicio"><input type="time" value={f.startTime} onChange={set("startTime")} /></Field>
             <Field label="Fin"><input type="time" value={f.endTime} onChange={set("endTime")} /></Field>
+            <Field label="Origen"><input placeholder="Ciudad de origen" value={f.origin || ""} onChange={set("origin")} /></Field>
+            <Field label="Destino"><input placeholder="Ciudad destino" value={f.destination || ""} onChange={set("destination")} /></Field>
             <Field label="Cliente"><input placeholder="Cliente del servicio" value={f.client} onChange={set("client")} /></Field>
             <Field label="Tipo de servicio"><select value={f.cargo} onChange={set("cargo")}>{CARGO.map(c => <option key={c.v} value={c.v}>{c.l}</option>)}</select></Field>
             <Field label="Razón Social"><select value={f.razonSocialId} onChange={set("razonSocialId")}>{razones.map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field>
           </div>
-          <Field label="Notas / instrucciones"><textarea placeholder="Info del servicio..." value={f.notes} onChange={set("notes")} /></Field>
-          <button className="btn btn-a mt12" onClick={addSlot}><Ico path={IC.check} size={14} /> Guardar</button>
+          <Field label="Notas / instrucciones adicionales"><textarea placeholder="Info del servicio, indicaciones especiales..." value={f.notes} onChange={set("notes")} /></Field>
+          <div className="tsm txt2 mt8 mb12" style={{ background: "var(--bg3)", padding: "8px 10px", borderRadius: 6 }}>
+            💡 Al guardar se enviará automáticamente una instrucción al conductor con todos estos datos.
+          </div>
+          <button className="btn btn-a mt4" onClick={addSlot}><Ico path={IC.check} size={14} /> Guardar y notificar al conductor</button>
+          {(() => {
+            const selDriver = drivers.find(d => d.id === f.driverId);
+            if (!selDriver?.phone) return <div className="tsm txt2 mt6">💡 Agrega el número de WhatsApp del conductor en Configuración para enviarle el viaje también por WhatsApp.</div>;
+            const msg = encodeURIComponent(`*TransControl* 🚛\nHola ${selDriver.name}, tienes un viaje asignado:\n📅 ${f.date || "Fecha por confirmar"}\n🕐 ${f.startTime} – ${f.endTime}\n${f.origin ? `📍 ${f.origin} → ${f.destination}` : ""}\n${f.client ? `🤝 Cliente: ${f.client}` : ""}\n${f.notes ? `📝 ${f.notes}` : ""}\n\nAbre la app para ver los detalles y confirmar.`);
+            return (
+              <a href={`https://wa.me/521${selDriver.phone}?text=${msg}`} target="_blank" rel="noreferrer"
+                className="btn btn-g mt6" style={{ textDecoration: "none", justifyContent: "center" }}>
+                💬 Enviar también por WhatsApp
+              </a>
+            );
+          })()}
         </div>
       )}
       {slots.length === 0 ? <div className="card"><Empty title="Sin asignaciones este día" sub="Agrega asignaciones de unidades" /></div> : (
@@ -1222,7 +1360,7 @@ function CoordClientForm({ clients, onSaveClients }) {
   );
 }
 
-function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outsourced, schedule, instructions, inspections, instant, onSaveSchedule, onSaveInstructions, onUpdateInstant, onResolveInspection, onDeleteInspection, onSaveVehicles, onSaveClients, onSaveProviders, onAddOut, onUpdateOut, onDeleteOut, onUpdate, onLogout }) {
+function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outsourced, schedule, instructions, inspections, instant, onSaveSchedule, onSaveInstructions, onUpdateInstant, onResolveInspection, onDeleteInspection, onSaveVehicles, onSaveClients, onSaveProviders, onAddOut, onUpdateOut, onDeleteOut, onUpdate, onAddStatusRequest, onLogout }) {
   const [tab, setTab] = useState("avail");
   const pending = instructions.filter(i => !i.ack).length;
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -1244,30 +1382,80 @@ function CoordApp({ vehicles, drivers, razones, clients, providers, trips, outso
         <div className="flex aic gap8"><span className="badge bpu">Coordinador</span><button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /> Salir</button></div>
       </div>
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
-      {tab === "avail" && <CoordAvailability vehicles={vehicles} drivers={drivers} schedule={schedule} instant={instant} onUpdateInstant={onUpdateInstant} />}
-      {tab === "sched" && <CoordSchedule vehicles={vehicles} drivers={drivers} razones={razones} schedule={schedule} onSaveSchedule={onSaveSchedule} />}
+      {tab === "avail" && <CoordAvailability vehicles={vehicles} drivers={drivers} schedule={schedule} instant={instant} onUpdateInstant={onUpdateInstant} onAddStatusRequest={onAddStatusRequest} />}
+      {tab === "sched" && <CoordSchedule vehicles={vehicles} drivers={drivers} razones={razones} schedule={schedule} instructions={instructions} onSaveSchedule={onSaveSchedule} onSaveInstructions={onSaveInstructions} />}
       {tab === "instrs" && <CoordInstructions vehicles={vehicles} drivers={drivers} razones={razones} instructions={instructions} onSaveInstructions={onSaveInstructions} />}
       {tab === "inspect" && <div className="page"><div className="stitle">Inspecciones Físico-Mecánicas</div><InspectionsView inspections={inspections} vehicles={vehicles} drivers={drivers} onResolve={onResolveInspection} onDelete={onDeleteInspection} /></div>}
       {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
       {tab === "gastos-viaje" && (
         <div className="page">
-          <div className="stitle">💸 Gastos de Viajes{pendingExpenses > 0 && <span className="badge ba ml8">{pendingExpenses} pendientes</span>}</div>
-          <div className="fcol gap8">
-            {[...trips].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30).map(t => {
-              const expenses = t.tripExpenses || [];
-              const pendCount = expenses.filter(e => e.paid !== true).length;
-              return (
-                <div key={t.id} className="card" style={{ borderLeft: `3px solid ${pendCount > 0 ? "var(--amber)" : "var(--border)"}` }}>
-                  <div className="flex aic jb mb4">
-                    <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
-                    <span className="tsm txt2">{fmtDate(t.date)}</span>
-                  </div>
-                  {t.client && <div className="tsm txt2 mb4">🤝 {t.client}</div>}
-                  <TripExpensesManager trip={t} onUpdate={onUpdate} />
-                </div>
-              );
-            })}
+          <div className="flex aic jb mb12">
+            <div className="stitle" style={{ margin: 0 }}>💸 Gastos de Viajes</div>
+            <div className="tsm txt2">{pendingExpenses} pendiente(s)</div>
           </div>
+          {(() => {
+            const [expandedTrips, setExpandedTrips] = useState({});
+            const [showAll, setShowAll] = useState(false);
+            const toggleTrip = id => setExpandedTrips(p => ({ ...p, [id]: !p[id] }));
+            const sorted = [...trips].sort((a, b) => b.date.localeCompare(a.date));
+            const withPending = sorted.filter(t => {
+              if (t.noExtraExpenses) return false;
+              const exp = t.tripExpenses || [];
+              return exp.some(e => e.paid !== true) || exp.length === 0;
+            });
+            const done = sorted.filter(t => t.noExtraExpenses || (t.tripExpenses || []).length > 0 && (t.tripExpenses || []).every(e => e.paid === true));
+            const displayed = showAll ? sorted : withPending;
+            return (
+              <div>
+                <div className="pill-tabs mb12" style={{ margin: 0 }}>
+                  <button className={`pill-tab ${!showAll ? "act" : ""}`} onClick={() => setShowAll(false)}>Pendientes ({withPending.length})</button>
+                  <button className={`pill-tab ${showAll ? "act" : ""}`} onClick={() => setShowAll(true)}>Todos ({sorted.length})</button>
+                </div>
+                <div className="fcol gap4">
+                  {displayed.slice(0, 50).map(t => {
+                    const expenses = t.tripExpenses || [];
+                    const pendCount = expenses.filter(e => e.paid !== true).length;
+                    const allPaid = expenses.length > 0 && expenses.every(e => e.paid === true);
+                    const isExp = expandedTrips[t.id];
+                    const status = t.noExtraExpenses ? "sin-extras" : allPaid ? "pagado" : pendCount > 0 ? "pendiente" : "sin-gastos";
+                    const statusColor = status === "sin-extras" || status === "pagado" ? "var(--green)" : status === "pendiente" ? "var(--amber)" : "var(--txt2)";
+                    const statusLabel = status === "sin-extras" ? "✓ Sin extras" : status === "pagado" ? "✓ Todo pagado" : status === "pendiente" ? `${pendCount} pendiente(s)` : "Sin gastos";
+                    return (
+                      <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: `3px solid ${statusColor}` }}>
+                        <div className="flex aic jb" onClick={() => toggleTrip(t.id)} style={{ cursor: "pointer" }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 700, fontSize: 14 }}>{t.origin} → {t.destination}</div>
+                            <div className="tsm txt2">{fmtDate(t.date)}{t.client ? ` · 🤝 ${t.client}` : ""}</div>
+                          </div>
+                          <div className="flex gap6 aic">
+                            <span className="tsm" style={{ color: statusColor, fontWeight: 600 }}>{statusLabel}</span>
+                            {!t.noExtraExpenses && (
+                              <button className="btn btn-g btn-sm" title="Marcar sin gastos extras"
+                                onClick={e => { e.stopPropagation(); onUpdate(t.id, { noExtraExpenses: true }); }}
+                                style={{ fontSize: 11 }}>✓ Sin extras</button>
+                            )}
+                            <span style={{ color: "var(--txt2)", fontSize: 12 }}>{isExp ? "▲" : "▼"}</span>
+                          </div>
+                        </div>
+                        {isExp && !t.noExtraExpenses && (
+                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                            <TripExpensesManager trip={t} onUpdate={onUpdate} />
+                          </div>
+                        )}
+                        {isExp && t.noExtraExpenses && (
+                          <div className="flex aic gap8 mt8">
+                            <div className="tsm txt2">✓ Marcado sin gastos extras</div>
+                            <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} onClick={() => onUpdate(t.id, { noExtraExpenses: false })}>↩ Reactivar</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {displayed.length === 0 && <Empty title="Sin viajes pendientes" sub="Todos los viajes tienen sus gastos resueltos 🎉" />}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
       {tab === "odometro" && <AdminOdometro trips={trips} vehicles={vehicles} onSaveVehicles={onSaveVehicles} />}
@@ -2343,13 +2531,13 @@ function AdminUnidades({ trips, inspections, vehicles }) {
 
 function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, onSaveVehicles, onSaveDrivers, onSaveClients, onSaveProviders, onSaveRazones }) {
   const [nv, setNv] = useState({ plates: "", model: "", year: "" });
-  const [nd, setNd] = useState({ name: "", license: "" });
+  const [nd, setNd] = useState({ name: "", license: "", phone: "" });
   const [nc, setNc] = useState({ name: "", rfc: "" });
   const [np, setNp] = useState({ name: "", rfc: "", paymentMethod: "transferencia" });
   const [nr, setNr] = useState({ name: "", rfc: "", short: "" });
   const [delId, setDelId] = useState(null); // "type:id" for inline confirmation
   const addV = () => { if (!nv.plates || !nv.model) return; onSaveVehicles([...vehicles, { id: genId(), ...nv, active: true }]); setNv({ plates: "", model: "", year: "" }); };
-  const addD = () => { if (!nd.name) return; onSaveDrivers([...drivers, { id: genId(), ...nd, active: true }]); setNd({ name: "", license: "" }); };
+  const addD = () => { if (!nd.name) return; onSaveDrivers([...drivers, { id: genId(), ...nd, active: true }]); setNd({ name: "", license: "", phone: "" }); };
   const addC = () => { if (!nc.name) return; onSaveClients([...(clients||[]), { id: genId(), ...nc, active: true }]); setNc({ name: "", rfc: "" }); };
   const addP = () => { if (!np.name.trim()) return; onSaveProviders([...(providers||[]), { id: genId(), ...np, active: true }]); setNp({ name: "", rfc: "", paymentMethod: "transferencia" }); };
   const addR = () => { if (!nr.name || !nr.short) return; onSaveRazones([...razones, { id: genId(), ...nr, active: true }]); setNr({ name: "", rfc: "", short: "" }); };
@@ -2417,11 +2605,16 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
           <div className="card mb12 fcol gap8">
             <Field label="Nombre *"><input value={nd.name} onChange={e => setNd(p => ({ ...p, name: e.target.value }))} placeholder="Nombre completo" /></Field>
             <Field label="No. Licencia"><input value={nd.license} onChange={e => setNd(p => ({ ...p, license: e.target.value }))} placeholder="L-001" /></Field>
+            <Field label="📱 WhatsApp (10 dígitos)"><input type="tel" value={nd.phone} onChange={e => setNd(p => ({ ...p, phone: e.target.value.replace(/\D/g,'') }))} placeholder="5512345678" maxLength={10} /></Field>
+            <div className="tsm txt2">El número se usa para enviarle mensajes de WhatsApp desde la app</div>
             <button className="btn btn-a" onClick={addD}><Ico path={IC.plus} size={14} /> Agregar</button>
           </div>
           <div className="fcol gap8">{drivers.map(d => (
             <div key={d.id} className="card flex aic jb">
-              <div><div style={{ fontWeight: 700 }}>{d.name}</div><div className="tsm txt2">Lic: {d.license || "Sin licencia"}</div></div>
+              <div>
+                <div style={{ fontWeight: 700 }}>{d.name}</div>
+                <div className="tsm txt2">Lic: {d.license || "Sin licencia"}{d.phone ? ` · 📱 ${d.phone}` : " · Sin WhatsApp"}</div>
+              </div>
               <div className="flex gap4">
                 <button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button>
                 <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id))} />
@@ -3100,7 +3293,7 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
   );
 }
 
-function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onResolveInspection, onDeleteInspection, onLogout }) {
+function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -3140,7 +3333,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
         {tab === "unidades" && <AdminUnidades trips={trips} inspections={inspections} vehicles={vehicles} />}
         {tab === "odometro" && <AdminOdometro trips={trips} vehicles={vehicles} onSaveVehicles={onSaveVehicles} />}
         {tab === "inspecciones" && <div className="ap"><div className="stitle">Inspecciones Físico-Mecánicas</div><InspectionsView inspections={inspections} vehicles={vehicles} drivers={drivers} onResolve={onResolveInspection} onDelete={onDeleteInspection} /></div>}
-        {tab === "disponib" && <CoordAvailability vehicles={vehicles} drivers={drivers} schedule={schedule} instant={instant} onUpdateInstant={onUpdateInstant} />}
+        {tab === "disponib" && <CoordAvailability vehicles={vehicles} drivers={drivers} schedule={schedule} instant={instant} onUpdateInstant={onUpdateInstant} onAddStatusRequest={onAddStatusRequest} />}
         {tab === "config" && <AdminConfig trips={trips} vehicles={vehicles} drivers={drivers} clients={clients} providers={providers} razones={razones} onSaveVehicles={onSaveVehicles} onSaveDrivers={onSaveDrivers} onSaveClients={onSaveClients} onSaveProviders={onSaveProviders} onSaveRazones={onSaveRazones} />}
       </div>
     </div>
@@ -3159,6 +3352,7 @@ export default function App() {
   const [providers, setProviders] = useState([]);
   const [instructions, setInstructions] = useState([]); const [schedule, setSchedule] = useState([]);
   const [instant, setInstant] = useState({ vehicles: [], drivers: [] });
+  const [statusRequests, setStatusRequests] = useState([]);
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
@@ -3173,12 +3367,13 @@ export default function App() {
         ld("tr:expenses",[]), ld("tr:outsourced",[]),
         ld("tr:razones",DEF_RS), ld("tr:clients",[]), ld("tr:providers",[]),
         ld("tr:instructions",[]), ld("tr:schedule",[]),
-        ld("tr:instant",{vehicles:[],drivers:[]}),
-      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst]) => {
+        ld("tr:instant",{vehicles:[],drivers:[]}), ld("tr:status_requests",[]),
+      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq]) => {
         setTrips(t); setInspections(i); setVehicles(v); setDrivers(d);
         setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
         setInstructions(ins); setSchedule(sc);
         setInstant(inst||{vehicles:[],drivers:[]});
+        setStatusRequests(sreq||[]);
         if (info.rol === "chofer") {
           // 1. Check saved email→driverId mapping in Firestore
           const emailMap = await ld("tr:email_driver_map", {});
@@ -3222,6 +3417,8 @@ export default function App() {
   const saveSchedule = s => { setSchedule(s); sv("tr:schedule", s); };
   const ackInstruction = id => { const u = upd(instructions, id, { ack: true }); setInstructions(u); sv("tr:instructions", u); };
   const updateInstant = u => { setInstant(u); sv("tr:instant", u); };
+  const addStatusRequest = req => { const u = [...statusRequests, req]; setStatusRequests(u); sv("tr:status_requests", u); };
+  const updStatusRequest = (id, patch) => { const u = statusRequests.map(r => r.id === id ? { ...r, ...patch } : r); setStatusRequests(u); sv("tr:status_requests", u); };
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -3245,7 +3442,10 @@ export default function App() {
   if (role === "chofer") return (
     <ChoferApp driver={driver} trips={trips} inspections={inspections}
       vehicles={vehicles.filter(v => v.active)} drivers={drivers} razones={razones.filter(r => r.active)}
-      clients={clients} instructions={instructions} onAdd={addTrip} onUpdate={updTrip} onAddIns={addIns} onAck={ackInstruction}
+      clients={clients} instructions={instructions} instant={instant}
+      statusRequests={statusRequests.filter(r => r.driverId === driver?.id)}
+      onAdd={addTrip} onUpdate={updTrip} onAddIns={addIns} onAck={ackInstruction}
+      onUpdateInstant={updateInstant} onUpdStatusRequest={updStatusRequest}
       onLogout={() => signOut(auth)} />
   );
 
@@ -3255,6 +3455,7 @@ export default function App() {
       onSaveSchedule={saveSchedule} onSaveInstructions={saveInstructions}
       onUpdateInstant={updateInstant} onSaveVehicles={saveVehicles} onSaveClients={saveClients} onSaveProviders={saveProviders}
       onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut} onUpdate={updTrip}
+      onAddStatusRequest={addStatusRequest}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
   );
 
@@ -3266,7 +3467,7 @@ export default function App() {
       onSaveExpenses={saveExps} onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut}
       onSaveVehicles={saveVehicles} onSaveDrivers={saveDrivers} onSaveRazones={saveRazones}
       onSaveClients={saveClients} onSaveProviders={saveProviders}
-      onUpdateInstant={updateInstant}
+      onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
   );
 }
