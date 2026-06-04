@@ -111,6 +111,11 @@ async function ldPh(id, t) {
 async function svPh(id, t, b64) {
   try {
     const compressed = await compressImg(b64);
+    // Firestore doc limit ~1MB — warn if PDF is too large
+    if (compressed.length > 900000) {
+      alert(`El archivo es demasiado grande (${Math.round(compressed.length/1024)}KB). El límite es ~700KB. Intenta comprimir el PDF antes de subirlo.`);
+      return;
+    }
     await setDoc(doc(db, "ph", `${sk(id)}_${t}`), { v: compressed, t: Date.now() });
   } catch(e) { console.error("svPh:", e.message); }
 }
@@ -293,17 +298,19 @@ async function downloadClientZip(client, month, clientTrips) {
 }
 
 
-function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, onSave, onCancel }) {
+function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, gpsOrigin, gpsDestination, gpsVehicleId, onSave, onCancel }) {
   const [f, setF] = useState({
-    date: today(), origin: "", destination: "", departTime: "", arriveTime: "",
-    cargo: "general", vehicleId: vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
+    date: today(), origin: gpsOrigin || "", destination: gpsDestination || "", departTime: "", arriveTime: "",
+    cargo: "general", vehicleId: gpsVehicleId || vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
     client: "", docNum: "", notes: "", razonSocialId: isChofer ? "" : (razones[0]?.id || ""), patioReg: false,
-    endKm: "", tripStatus: "completado",  // completado | en_curso
+    endKm: "", tripStatus: "completado",
+    originModified: false, destinationModified: false,
   });
   const [tmpId] = useState(genId);
   const [tripExps, setTripExps] = useState([]);
   const [newExp, setNewExp] = useState({ desc: "", amount: "" });
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const setGPS = k => e => setF(p => ({ ...p, [k]: e.target.value, [`${k}Modified`]: !!(gpsOrigin || gpsDestination) }));
   const addExp = () => {
     const a = parseFloat(newExp.amount);
     if (!newExp.desc || isNaN(a) || a <= 0) return;
@@ -312,7 +319,7 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
   };
   const submit = () => {
     if (!f.origin || !f.destination || !f.client || !f.vehicleId) { alert("Completa: Origen, Destino, Cliente y Unidad"); return; }
-    onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", tripExpenses: tripExps, createdAt: new Date().toISOString() });
+    onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() });
   };
   return (
     <div>
@@ -324,8 +331,20 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
             : <select value={f.driverId} onChange={set("driverId")}>{drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select>}
         </Field>
         <Field label="Unidad *"><select value={f.vehicleId} onChange={set("vehicleId")}>{vehicles.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}</select></Field>
-        <Field label="Origen *"><input placeholder="Ciudad de salida" value={f.origin} onChange={set("origin")} /></Field>
-        <Field label="Destino *"><input placeholder="Ciudad de llegada" value={f.destination} onChange={set("destination")} /></Field>
+        <div>
+          <Field label="Origen *">
+            <input placeholder="Ciudad de salida" value={f.origin} onChange={gpsOrigin ? setGPS("origin") : set("origin")} />
+          </Field>
+          {gpsOrigin && f.origin !== gpsOrigin && <span className="tsm" style={{ color: "var(--amber)" }}>✏️ Modificado</span>}
+          {gpsOrigin && f.origin === gpsOrigin && <span className="tsm" style={{ color: "var(--green)" }}>📍 GPS</span>}
+        </div>
+        <div>
+          <Field label="Destino *">
+            <input placeholder="Ciudad de llegada" value={f.destination} onChange={gpsDestination ? setGPS("destination") : set("destination")} />
+          </Field>
+          {gpsDestination && f.destination !== gpsDestination && <span className="tsm" style={{ color: "var(--amber)" }}>✏️ Modificado</span>}
+          {gpsDestination && f.destination === gpsDestination && <span className="tsm" style={{ color: "var(--green)" }}>📍 GPS</span>}
+        </div>
         <Field label="Hora de salida"><input type="time" value={f.departTime} onChange={set("departTime")} /></Field>
         <Field label="Hora de llegada"><input type="time" value={f.arriveTime} onChange={set("arriveTime")} /></Field>
         <Field label="Tipo de mercancía"><select value={f.cargo} onChange={set("cargo")}>{CARGO.map(c => <option key={c.v} value={c.v}>{c.l}</option>)}</select></Field>
@@ -560,34 +579,69 @@ function LoginScreen() {
   );
 }
 
-function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant }) {
+function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant, onGPSTripEnd }) {
   const [showSelect, setShowSelect] = useState(false);
   const [selV, setSelV] = useState(vehicles[0]?.id || "");
+  const [locating, setLocating] = useState(false);
   const isBusy = (instant.drivers || []).includes(driver.id) && !(instant.freeD || []).includes(driver.id);
   const curVId = (instant.currentVehicle || {})[driver.id];
   const curV = vehicles.find(v => v.id === curVId);
-  const startTrip = () => {
+  const startData = (instant.tripStart || {})[driver.id];
+
+  const getLocation = () => new Promise(resolve => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async pos => {
+        const { latitude: lat, longitude: lng } = pos.coords;
+        try {
+          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=es`);
+          const d = await r.json();
+          const parts = [d.address?.city || d.address?.town || d.address?.village, d.address?.state].filter(Boolean);
+          const address = parts.join(", ") || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+          setLocating(false);
+          resolve({ lat, lng, address });
+        } catch {
+          setLocating(false);
+          resolve({ lat, lng, address: `${lat.toFixed(4)}, ${lng.toFixed(4)}` });
+        }
+      },
+      () => { setLocating(false); resolve(null); },
+      { timeout: 8000, maximumAge: 60000 }
+    );
+  });
+
+  const startTrip = async () => {
     if (!selV) return;
+    setLocating(true);
+    const loc = await getLocation();
     onUpdateInstant({
       ...instant,
       vehicles: [...new Set([...(instant.vehicles||[]), selV])],
       drivers: [...new Set([...(instant.drivers||[]), driver.id])],
       freeV: (instant.freeV||[]).filter(id => id !== selV),
       freeD: (instant.freeD||[]).filter(id => id !== driver.id),
-      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: selV }
+      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: selV },
+      tripStart: { ...(instant.tripStart||{}), [driver.id]: { ...(loc||{}), vehicleId: selV, timestamp: new Date().toISOString() } }
     });
     setShowSelect(false);
   };
-  const endTrip = () => {
+
+  const endTrip = async () => {
+    setLocating(true);
+    const endLoc = await getLocation();
     onUpdateInstant({
       ...instant,
       vehicles: (instant.vehicles||[]).filter(id => id !== curVId),
       drivers: (instant.drivers||[]).filter(id => id !== driver.id),
       freeD: (instant.freeD||[]).filter(id => id !== driver.id),
       freeV: (instant.freeV||[]).filter(id => id !== curVId),
-      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: null }
+      currentVehicle: { ...(instant.currentVehicle||{}), [driver.id]: null },
     });
+    // Offer GPS trip creation
+    if (onGPSTripEnd) onGPSTripEnd({ startData, endLoc, vehicleId: curVId });
   };
+
   return (
     <div className="card mb16" style={{ borderLeft: `4px solid ${isBusy ? "var(--red)" : "var(--green)"}`, background: isBusy ? "#ef444408" : "#22c55e08" }}>
       <div className="flex aic jb">
@@ -597,23 +651,28 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant }) {
             {isBusy ? "🔴 En viaje" : "🟢 Disponible"}
           </span>
           {isBusy && curV && <div className="tsm txt2 mt6">🚛 {curV.plates} — {curV.model}</div>}
+          {isBusy && startData?.address && <div className="tsm txt2">📍 Inicio: {startData.address}</div>}
         </div>
-        {!isBusy
-          ? <button className="btn btn-r" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={() => setShowSelect(!showSelect)}>🚛 Iniciar viaje</button>
-          : <button className="btn btn-gr" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={endTrip}>✅ Finalizar viaje</button>
+        {locating ? <div className="tsm txt2">📍 Obteniendo ubicación...</div>
+          : !isBusy
+            ? <button className="btn btn-r" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={() => setShowSelect(!showSelect)}>🚛 Iniciar viaje</button>
+            : <button className="btn btn-gr" style={{ padding: "10px 16px", fontWeight: 700 }} onClick={endTrip}>✅ Finalizar viaje</button>
         }
       </div>
       {showSelect && !isBusy && (
-        <div className="flex gap8 aic mt12" style={{ paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-          <div style={{ flex: 1 }}>
-            <div className="tsm txt2 mb4">Selecciona la unidad que usarás:</div>
-            <select value={selV} onChange={e => setSelV(e.target.value)} style={{ width: "100%" }}>
-              {vehicles.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}
-            </select>
-          </div>
-          <div className="flex gap4 aic" style={{ marginTop: 20 }}>
-            <button className="btn btn-r" onClick={startTrip}>Confirmar</button>
-            <button className="btn btn-g" onClick={() => setShowSelect(false)}>✕</button>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+          <div className="tsm txt2 mb8">📍 Se registrará tu ubicación actual como punto de inicio.</div>
+          <div className="flex gap8 aic">
+            <div style={{ flex: 1 }}>
+              <div className="tsm txt2 mb4">Selecciona la unidad:</div>
+              <select value={selV} onChange={e => setSelV(e.target.value)} style={{ width: "100%" }}>
+                {vehicles.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}
+              </select>
+            </div>
+            <div className="flex gap4 aic" style={{ marginTop: 20 }}>
+              <button className="btn btn-r" onClick={startTrip}>Confirmar</button>
+              <button className="btn btn-g" onClick={() => setShowSelect(false)}>✕</button>
+            </div>
           </div>
         </div>
       )}
@@ -621,7 +680,7 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant }) {
   );
 }
 
-function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest }) {
+function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
   const td = today(); const mk = nowMon();
   const my = trips.filter(t => t.driverId === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
@@ -679,7 +738,7 @@ function ChoferHome({ driver, trips, inspections, instructions, availableRelays,
       ))}
       {/* Driver status panel */}
       {instant && onUpdateInstant && (
-        <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} />
+        <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} onGPSTripEnd={onGPSTripEnd} />
       )}
       {availableRelays && availableRelays.length > 0 && (
         <div className="mb16">
@@ -930,6 +989,7 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
   const [view, setView] = useState("home");
   const [toast, setToast] = useState("");
   const [relayTrip, setRelayTrip] = useState(null);
+  const [gpsTrip, setGpsTrip] = useState(null); // Pre-filled GPS trip data
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 3000); };
   const av = vehicles.filter(v => v.active);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack).length;
@@ -959,7 +1019,8 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
       {view === "home" && <ChoferHome driver={driver} trips={trips} inspections={inspections} instructions={instructions}
         availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests}
         onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
-        onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest} />}
+        onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest}
+        onGPSTripEnd={gpsData => { setGpsTrip(gpsData); setView("nuevo"); }} />}
       {view === "relay" && relayTrip && (
         <div className="page">
           <TripContinueForm trip={relayTrip} vehicles={av} currentDriver={driver}
@@ -968,10 +1029,20 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
         </div>
       )}
       {view === "nuevo" && (
-        <div className="page"><div className="stitle mb12">Registrar Nuevo Viaje</div>
+        <div className="page">
+          {gpsTrip && (
+            <div className="card mb12" style={{ borderLeft: "4px solid var(--green)", background: "#22c55e08" }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>📍 Viaje registrado por GPS</div>
+              <div className="tsm txt2">Origen: {gpsTrip.startData?.address || "Sin GPS"}</div>
+              <div className="tsm txt2">Destino: {gpsTrip.endLoc?.address || "Sin GPS"}</div>
+              <div className="tsm txt2 mt4">Los campos de origen y destino están pre-llenados. Puedes editarlos — quedarán marcados como "Modificado".</div>
+            </div>
+          )}
+          <div className="stitle mb12">Registrar Nuevo Viaje</div>
           <TripForm drivers={drivers} vehicles={av} razones={razones} clients={clients} currentDriver={driver} isChofer={true}
-            onSave={t => { onAdd(t); showToast("Viaje registrado"); setView("home"); }}
-            onCancel={() => setView("home")} />
+            gpsOrigin={gpsTrip?.startData?.address} gpsDestination={gpsTrip?.endLoc?.address} gpsVehicleId={gpsTrip?.vehicleId}
+            onSave={t => { onAdd(t); showToast("Viaje registrado"); setGpsTrip(null); setView("home"); }}
+            onCancel={() => { setGpsTrip(null); setView("home"); }} />
         </div>
       )}
       {view === "inspeccion" && (
@@ -1924,7 +1995,8 @@ function IVAToggles({ sinFactura, retention, onToggleSF, onToggleRet }) {
 
 function BillingPanel({ trip, onUpdate }) {
   const [invNum, setInvNum] = useState(trip.invoiceNumber || "");
-  const save = patch => onUpdate(trip.id, patch);
+  const [saved, setSaved] = useState(false);
+  const save = patch => { onUpdate(trip.id, patch); setSaved(true); setTimeout(() => setSaved(false), 2000); };
   const bs = trip.billingStatus || "sin_facturar";
   return (
     <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 6, padding: 14, marginTop: 8 }}>
@@ -1948,7 +2020,11 @@ function BillingPanel({ trip, onUpdate }) {
         <Field label="No. Factura / Folio CFDI">
           <div className="flex gap4">
             <input value={invNum} onChange={e => setInvNum(e.target.value)} placeholder="F-2025-001" style={{ flex: 1 }} />
-            <button className="btn btn-a btn-sm" onClick={() => save({ invoiceNumber: invNum, billingStatus: "facturado" })}>✓</button>
+            <button className={`btn btn-sm ${saved ? "btn-gr" : "btn-a"}`}
+              onClick={() => save({ invoiceNumber: invNum, billingStatus: "facturado" })}
+              style={{ minWidth: 80, justifyContent: "center" }}>
+              {saved ? "✓ Guardado" : "✓ Guardar"}
+            </button>
           </div>
         </Field>
       </div>
@@ -2006,7 +2082,8 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
   }).sort((a, b) => b.date.localeCompare(a.date));
   const gd = id => drivers.find(d => d.id === id); const gv = id => vehicles.find(v => v.id === id);
   const totalInc = filtered.reduce((s, t) => s + (t.amount || 0), 0);
-  const saveAmt = id => { const v = parseFloat(editAmt[id] || 0); if (!isNaN(v)) onUpdate(id, { amount: v }); setEditAmt(p => { const n = { ...p }; delete n[id]; return n; }); };
+  const [savedId, setSavedId] = useState(null);
+  const saveAmt = id => { const v = parseFloat(editAmt[id] || 0); if (!isNaN(v)) { onUpdate(id, { amount: v }); setSavedId(id); setTimeout(() => setSavedId(null), 2000); } setEditAmt(p => { const n = { ...p }; delete n[id]; return n; }); };
   return (
     <div className="ap">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>Registro de Viajes</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Nuevo</button></div>
@@ -2096,7 +2173,11 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                     <div className="fcol gap4" style={{ flex: 1 }}>
                       <div className="flex gap4 aic">
                         <input className="inp-in" type="number" placeholder="Subtotal sin IVA" value={editAmt[t.id]} onChange={e => setEditAmt(p => ({ ...p, [t.id]: e.target.value }))} onKeyDown={e => e.key === "Enter" && saveAmt(t.id)} autoFocus style={{ flex: 1 }} />
-                        <button className="btn btn-gr btn-sm" onClick={() => saveAmt(t.id)}>✓</button>
+                        <button className={`btn btn-sm ${savedId === t.id ? "btn-gr" : "btn-gr"}`}
+                        onClick={() => saveAmt(t.id)}
+                        style={{ minWidth: savedId === t.id ? 80 : 32, justifyContent: "center", background: savedId === t.id ? "var(--green)" : "" }}>
+                        {savedId === t.id ? "✓ Guardado" : "✓"}
+                      </button>
                         <button className="btn btn-g btn-sm" onClick={() => setEditAmt(p => { const n={...p}; delete n[t.id]; return n; })}>✕</button>
                       </div>
                       <IVAToggles sinFactura={t.sinFactura} retention={t.ivaRetention}
