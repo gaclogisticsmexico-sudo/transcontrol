@@ -595,10 +595,14 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant, onGPSTr
       async pos => {
         const { latitude: lat, longitude: lng } = pos.coords;
         try {
-          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=es`);
+          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=18&addressdetails=1&accept-language=es`);
           const d = await r.json();
-          const parts = [d.address?.city || d.address?.town || d.address?.village, d.address?.state].filter(Boolean);
-          const address = parts.join(", ") || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+          const a = d.address || {};
+          const colonia   = a.suburb || a.neighbourhood || a.quarter || a.residential || "";
+          const delegacion = a.city_district || a.borough || a.municipality || a.county || "";
+          const ciudad    = a.city || a.town || a.village || a.state_district || "";
+          const parts = [colonia, delegacion, ciudad].filter(Boolean);
+          const address = parts.length ? parts.join(", ") : `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
           setLocating(false);
           resolve({ lat, lng, address });
         } catch {
