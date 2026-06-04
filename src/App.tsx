@@ -230,7 +230,15 @@ function Ico({ path, size = 20 }) {
 }
 function Field({ label, children }) { return <div className="field">{label && <label>{label}</label>}{children}</div>; }
 function CargoBadge({ v }) { const cls = v === "general" ? "bb" : v === "refrigerado" ? "bc" : "br"; return <span className={`badge ${cls}`}>{CARGO.find(c => c.v === v)?.l || v}</span>; }
-function BillingBadge({ v }) { const b = BILLING.find(b => b.v === v) || BILLING[0]; return <span className={`badge ${b.c}`}>{b.l}</span>; }
+function BillingBadge({ v, mp }) {
+  if (v === "pagado" && mp === "PPD") return <span className="badge bg">✓ Pagado c/Complemento</span>;
+  if (v === "pagado") return <span className="badge bg">✓ Pagado</span>;
+  if (v === "facturado" && mp === "PPD") return <span className="badge ba">📋 PPD — Pdte. complemento</span>;
+  if (v === "facturado" && mp === "PUE") return <span className="badge ba">💳 PUE — Pdte. pago</span>;
+  if (v === "facturado") return <span className="badge ba">Facturado</span>;
+  if (v === "sin_factura") return <span className="badge bgr">Sin factura</span>;
+  return <span className="badge bgr">Sin facturar</span>;
+}
 function RSBadge({ id, razones }) { const rs = razones?.find(r => r.id === id); return rs ? <span className="rs-pill">🏢 {rs.short}</span> : null; }
 function Empty({ title, sub }) { return <div className="empty"><div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{title}</div><div className="tsm">{sub}</div></div>; }
 function ChkBox({ checked, onChange }) {
@@ -350,7 +358,11 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
         <Field label="Tipo de mercancía"><select value={f.cargo} onChange={set("cargo")}>{CARGO.map(c => <option key={c.v} value={c.v}>{c.l}</option>)}</select></Field>
         <Field label="Cliente *">
           {clients && clients.filter(c => c.active !== false).length > 0 ? (
-            <select value={f.client} onChange={set("client")}>
+            <select value={f.client} onChange={e => {
+              const name = e.target.value;
+              const sel = (clients||[]).find(c => c.name === name);
+              setF(p => ({ ...p, client: name, razonSocialId: sel?.razonSocialId || p.razonSocialId }));
+            }}>
               <option value="">-- Seleccionar cliente --</option>
               {clients.filter(c => c.active !== false).map(c => <option key={c.id} value={c.name}>{c.name}{c.rfc ? ` · ${c.rfc}` : ""}</option>)}
             </select>
@@ -1999,12 +2011,18 @@ function IVAToggles({ sinFactura, retention, onToggleSF, onToggleRet }) {
 
 function BillingPanel({ trip, onUpdate }) {
   const [invNum, setInvNum] = useState(trip.invoiceNumber || "");
-  const [saved, setSaved] = useState(false);
-  const save = patch => { onUpdate(trip.id, patch); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  const [pendingMethod, setPendingMethod] = useState(false); // show PPD/PUE after PDF upload
+  const save = patch => onUpdate(trip.id, patch);
   const bs = trip.billingStatus || "sin_facturar";
+  const mp = trip.metodoPago || "";
+  const selectMethod = method => {
+    save({ billingStatus: "facturado", metodoPago: method, ...(invNum ? { invoiceNumber: invNum } : {}) });
+    setPendingMethod(false);
+  };
   return (
     <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 6, padding: 14, marginTop: 8 }}>
       <div className="stitle" style={{ fontSize: 15, marginBottom: 10 }}>💰 Cobranza y facturación SAT</div>
+
       {/* IVA breakdown */}
       {trip.amount > 0 && (
         <div className="mb12">
@@ -2014,51 +2032,131 @@ function BillingPanel({ trip, onUpdate }) {
           <IVACalc base={trip.amount} sinFactura={trip.sinFactura} retention={trip.ivaRetention} label="Total a cobrar" />
         </div>
       )}
-      <div className="g2 mb8">
-        <Field label="Forma de pago">
-          <select value={trip.paymentMethod || ""} onChange={e => save({ paymentMethod: e.target.value })}>
-            <option value="">Sin definir</option><option value="efectivo">💵 Efectivo</option>
-            <option value="transferencia">🏦 Transferencia</option><option value="cheque">📝 Cheque</option>
-          </select>
-        </Field>
-        <Field label="No. Factura / Folio CFDI">
-          <div className="flex gap4">
-            <input value={invNum} onChange={e => setInvNum(e.target.value)} placeholder="F-2025-001" style={{ flex: 1 }} />
-            <button className={`btn btn-sm ${saved ? "btn-gr" : "btn-a"}`}
-              onClick={() => save({ invoiceNumber: invNum, billingStatus: "facturado" })}
-              style={{ minWidth: 80, justifyContent: "center" }}>
-              {saved ? "✓ Guardado" : "✓ Guardar"}
-            </button>
+
+      {/* Forma de pago operativa */}
+      <Field label="Forma de pago" style={{ marginBottom: 12 }}>
+        <select value={trip.paymentMethod || ""} onChange={e => save({ paymentMethod: e.target.value })}>
+          <option value="">Sin definir</option>
+          <option value="efectivo">💵 Efectivo</option>
+          <option value="transferencia">🏦 Transferencia</option>
+          <option value="cheque">📝 Cheque</option>
+        </select>
+      </Field>
+
+      {/* Estado actual */}
+      <div className="flex aic gap8 mb12">
+        <BillingBadge v={bs} mp={mp} />
+        {mp && <span className="tsm txt2">Método SAT: <strong>{mp}</strong></span>}
+      </div>
+
+      {/* ── SIN FACTURAR: subir factura PDF dispara PPD/PUE ── */}
+      {(bs === "sin_facturar" || bs === "sin_factura") && (
+        <div className="fcol gap8">
+          <Field label="No. Factura / Folio CFDI (opcional)">
+            <input value={invNum} onChange={e => setInvNum(e.target.value)} placeholder="F-2025-001" />
+          </Field>
+
+          {/* Subir factura = paso 1 */}
+          {!pendingMethod && (
+            <div className="card" style={{ background: "var(--bg)" }}>
+              <div className="tsm txt2 mb8" style={{ fontWeight: 700 }}>📎 Subir factura CFDI (PDF)</div>
+              <PhotoBtn label="Subir factura PDF" photoKey={[trip.id, "invoice"]} compact
+                onLoad={() => setPendingMethod(true)} />
+              <div className="tsm txt2 mt6">Al subir el PDF se pedirá seleccionar PPD o PUE.</div>
+            </div>
+          )}
+
+          {/* Seleccionar PPD/PUE = paso 2, aparece tras subir */}
+          {pendingMethod && (
+            <div className="card" style={{ background: "#22c55e0a", border: "1px solid var(--green)" }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>✓ Factura subida — ¿Método de pago SAT?</div>
+              <div className="tsm txt2 mb12">Selecciona cómo va a pagar el cliente según el CFDI emitido:</div>
+              <div className="flex gap8 wrap">
+                <button className="btn btn-a" style={{ flex: 1, justifyContent: "center" }} onClick={() => selectMethod("PPD")}>
+                  📋 PPD — Pago diferido<br/><span style={{ fontWeight: 400, fontSize: 11 }}>El cliente pagará después</span>
+                </button>
+                <button className="btn btn-b" style={{ flex: 1, justifyContent: "center" }} onClick={() => selectMethod("PUE")}>
+                  💳 PUE — Una exhibición<br/><span style={{ fontWeight: 400, fontSize: 11 }}>Pago inmediato o ya pagó</span>
+                </button>
+              </div>
+              <button className="btn btn-g btn-sm mt8" onClick={() => setPendingMethod(false)}>↩ Cancelar</button>
+            </div>
+          )}
+
+          <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura" })}>💵 Sin factura / Efectivo</button>
+        </div>
+      )}
+
+      {/* ── FACTURADO PPD: pendiente de complemento ── */}
+      {bs === "facturado" && mp === "PPD" && (
+        <div className="fcol gap8">
+          <div className="card" style={{ background: "#f59e0b0a", border: "1px solid var(--amber)" }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>📋 Pendiente: Complemento de pago</div>
+            <div className="tsm txt2 mb8">Sube el complemento SAT cuando el cliente realice el pago.</div>
+            <div className="tsm txt2 mb4">Complemento de pago SAT</div>
+            <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact
+              onLoad={() => save({ billingStatus: "pagado", paidDate: today(), complementoSubido: true })} />
           </div>
-        </Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, marginBottom: 12 }}>
-        <div><div className="tsm txt2 mb4">Carta Porte</div><PhotoBtn label="Subir carta porte" photoKey={[trip.id, "cartaporte"]} compact /></div>
-        <div><div className="tsm txt2 mb4">Comprobante entrega</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "delivery"]} compact /></div>
-        <div><div className="tsm txt2 mb4">Factura CFDI</div><PhotoBtn label="Subir factura" photoKey={[trip.id, "invoice"]} compact /></div>
-        <div>
-          <div className="tsm txt2 mb4">Comprobante de pago</div>
-          <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact
-            onLoad={() => { if (bs === "facturado") save({ billingStatus: "pagado", paidDate: today() }); }} />
+          <div className="flex gap4 wrap">
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), complementoSubido: true })}>
+              ✓ Marcar pagado c/Complemento
+            </button>
+            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
+          </div>
         </div>
-        <div>
-          <div className="tsm txt2 mb4">Complemento SAT</div>
-          <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact
-            onLoad={() => { if (bs === "pagado") save({ billingStatus: "complemento" }); }} />
+      )}
+
+      {/* ── FACTURADO PUE: pendiente de comprobante ── */}
+      {bs === "facturado" && mp === "PUE" && (
+        <div className="fcol gap8">
+          <div className="card" style={{ background: "#3b82f60a", border: "1px solid var(--blue)" }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>💳 Pendiente: Comprobante de pago</div>
+            <div className="tsm txt2 mb4">Comprobante de pago del cliente</div>
+            <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact
+              onLoad={() => save({ billingStatus: "pagado", paidDate: today() })} />
+          </div>
+          <div className="flex gap4 wrap">
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today() })}>✓ Marcar pagado</button>
+            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
+          </div>
         </div>
-      </div>
-      <div className="flex gap4 wrap mb8">
-        {BILLING.map(b => (
-          <button key={b.v} className={`btn btn-sm ${bs === b.v ? "btn-a" : "btn-g"}`}
-            onClick={() => save({ billingStatus: b.v, ...(b.v === "pagado" ? { paidDate: today() } : {}) })}>
-            {b.l}
-          </button>
-        ))}
-        {(bs === "pagado" || bs === "complemento") && (
+      )}
+
+      {/* ── PAGADO ── */}
+      {bs === "pagado" && (
+        <div className="fcol gap8">
+          <div className="card" style={{ background: "#22c55e0a", border: "1px solid var(--green)" }}>
+            <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 4 }}>
+              ✓ {mp === "PPD" ? "Pagado con complemento emitido" : "Pagado"}
+            </div>
+            {trip.paidDate && <div className="tsm txt2">Fecha: {fmtDate(trip.paidDate)}</div>}
+          </div>
           <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}
             onClick={() => save({ billingStatus: "facturado", paidDate: null })}>↩ Revertir pago</button>
-        )}
+        </div>
+      )}
+
+      {/* Folio CFDI editable */}
+      {bs !== "sin_facturar" && bs !== "sin_factura" && (
+        <div className="mt12">
+          <Field label="No. Factura / Folio CFDI">
+            <div className="flex gap4">
+              <input value={invNum} onChange={e => setInvNum(e.target.value)} placeholder="F-2025-001" style={{ flex: 1 }} />
+              <button className="btn btn-g btn-sm" onClick={() => save({ invoiceNumber: invNum })}>✓</button>
+            </div>
+          </Field>
+        </div>
+      )}
+
+      {/* Documentos siempre disponibles */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+        <div><div className="tsm txt2 mb4">Carta Porte</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "cartaporte"]} compact /></div>
+        <div><div className="tsm txt2 mb4">Comprobante entrega</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "delivery"]} compact /></div>
+        <div><div className="tsm txt2 mb4">Factura CFDI</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "invoice"]} compact /></div>
+        {mp === "PPD" && <div><div className="tsm txt2 mb4">Complemento SAT</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "complemento"]} compact /></div>}
+        {mp === "PUE" && <div><div className="tsm txt2 mb4">Comprobante pago</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "payment"]} compact /></div>}
       </div>
+
       {(trip.tripExpenses || []).length > 0 && (
         <div className="mt8 pt8" style={{ borderTop: "1px solid var(--border)" }}>
           <div className="tsm txt2 mb4">Gastos del viaje:</div>
@@ -2125,7 +2223,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                 <div className="flex aic jb mb8 wrap gap4">
                   <div className="flex gap4 aic wrap">
                     <span className="tsm txt2">{fmtDate(t.date)}</span>
-                    <CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} />
+                    <CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} mp={t.metodoPago} />
                     <RSBadge id={t.razonSocialId} razones={razones} />
                     {t.tripStatus === "en_curso" && <span className="badge br">🔄 En curso</span>}
                     {legs.length > 0 && <span className="badge ba">🔄 {legs.length + 1} tramos</span>}
@@ -2285,7 +2383,7 @@ function AdminClientes({ trips, razones }) {
                               <td style={{ whiteSpace: "nowrap" }}>{fmtDate(t.date)}</td>
                               <td className="tsm">{t.origin} → {t.destination}</td>
                               <td><strong style={{ color: "var(--green)" }}>{t.amount ? fmt$(t.amount) : "—"}</strong></td>
-                              <td><BillingBadge v={t.billingStatus || "sin_facturar"} /></td>
+                              <td><BillingBadge v={t.billingStatus || "sin_facturar"} mp={t.metodoPago} /></td>
                               <td className="tsm txt2">{t.invoiceNumber || "—"}</td>
                               <td className="tsm" style={{ color: venc ? "var(--red)" : "var(--txt2)" }}>{dias !== null ? `${dias}d` : "—"}</td>
                             </tr>
@@ -2391,7 +2489,7 @@ function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDe
                     {o.clientAmount > 0 && !o.clientSinFactura && <div className="tsm" style={{ color: "var(--green)" }}>Total: {fmt$(ivaTotal(o.clientAmount, o.clientSinFactura, o.clientIvaRetention))}{o.clientIvaRetention ? " (c/ret.)" : " +IVA"}</div>}
                     {o.clientSinFactura && <div className="tsm txt2">💵 Sin factura</div>}
                     <div className="tsm txt2">{o.client || "—"}</div>
-                    <BillingBadge v={clientBS} />
+                    <BillingBadge v={clientBS} mp={o.clientMetodoPago} />
                     {o.clientInvoiceNum && <div className="tsm txt2">🧾 {o.clientInvoiceNum}</div>}
                   </div>
                   <div style={{ background: "#ef44440a", border: "1px solid #ef444433", borderRadius: 6, padding: 10 }}>
@@ -2787,10 +2885,16 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
       <div className="mt16 mb16">
         <div className="stitle">🤝 Catálogo de Clientes</div>
         <div className="card mb12">
-          <div className="tsm txt2 mb8">Los choferes seleccionarán de esta lista al registrar un viaje. Evita duplicados por errores ortográficos.</div>
+          <div className="tsm txt2 mb8">Asigna cada cliente a una Razón Social para que los viajes se clasifiquen automáticamente.</div>
           <div className="g2 mb8">
             <Field label="Nombre del cliente *"><input value={nc.name} onChange={e => setNc(p => ({ ...p, name: e.target.value }))} placeholder="Nombre de la empresa" onKeyDown={e => e.key === "Enter" && addC()} /></Field>
             <Field label="RFC (opcional)"><input value={nc.rfc} onChange={e => setNc(p => ({ ...p, rfc: e.target.value }))} placeholder="RFC del cliente" /></Field>
+            <Field label="Razón Social (RS asignada)">
+              <select value={nc.razonSocialId||""} onChange={e => setNc(p => ({ ...p, razonSocialId: e.target.value }))}>
+                <option value="">Sin asignar</option>
+                {razones.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}
+              </select>
+            </Field>
           </div>
           <button className="btn btn-a" onClick={addC}><Ico path={IC.plus} size={14} /> Agregar cliente</button>
         </div>
@@ -2804,6 +2908,12 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div className="fcol gap6">
                     <Field label="Nombre *"><input value={editData.name||""} onChange={ed("name")} /></Field>
                     <Field label="RFC"><input value={editData.rfc||""} onChange={ed("rfc")} /></Field>
+                    <Field label="Razón Social">
+                      <select value={editData.razonSocialId||""} onChange={ed("razonSocialId")}>
+                        <option value="">Sin asignar</option>
+                        {razones.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}
+                      </select>
+                    </Field>
                     <div className="flex gap4">
                       <button className="btn btn-a btn-sm" onClick={() => { onSaveClients((clients||[]).map(x=>x.id===c.id?{...x,...editData}:x)); cancelEdit(); }}>✓ Guardar</button>
                       <button className="btn btn-g btn-sm" onClick={cancelEdit}>Cancelar</button>
@@ -2813,7 +2923,10 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div className="flex aic jb">
                     <div>
                       <div style={{ fontWeight: 700 }}>{c.name}</div>
-                      {c.rfc && <div className="tsm txt2">RFC: {c.rfc}</div>}
+                      <div className="tsm txt2">
+                        {c.rfc && `RFC: ${c.rfc} · `}
+                        {c.razonSocialId ? <span className="rs-pill">{razones.find(r=>r.id===c.razonSocialId)?.short || "—"}</span> : <span style={{color:"var(--amber)"}}>⚠ Sin RS asignada</span>}
+                      </div>
                     </div>
                     <div className="flex gap4">
                       <button className="btn btn-g btn-sm" onClick={() => startEdit(c.id, c)}>✏️</button>
@@ -2992,7 +3105,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) 
         <div className="flex aic jb mb4 wrap gap4">
           <div className="flex aic gap8 wrap">
             <span className="tsm txt2">{fmtDate(t.date)}</span>
-            <BillingBadge v={bs(t)} />
+            <BillingBadge v={bs(t)} mp={t.metodoPago} />
             <RSBadge id={t.razonSocialId} razones={razones} />
           </div>
           <button className="btn btn-g btn-sm" onClick={() => setExpandedId(expandedId === t.id ? null : t.id)}>
@@ -3508,6 +3621,76 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
   );
 }
 
+function AdminComplementos({ trips, onUpdate }) {
+  const pending = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado")
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const done = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "pagado")
+    .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+  const [showDone, setShowDone] = useState(false);
+  const totalPending = pending.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+  const save = (id, patch) => onUpdate(id, patch);
+  return (
+    <div className="ap">
+      <div className="flex aic jb mb12">
+        <div className="stitle" style={{ margin: 0 }}>📋 Complementos de Pago SAT</div>
+        {pending.length > 0 && <span style={{ fontWeight: 800, color: "var(--amber)", fontSize: 18 }}>{fmt$(totalPending)}</span>}
+      </div>
+
+      {pending.length === 0 && !showDone && (
+        <Empty title="Sin complementos pendientes" sub="Todos los viajes PPD tienen su complemento de pago emitido 🎉" />
+      )}
+
+      {pending.length > 0 && (
+        <div className="fcol gap8 mb16">
+          <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>Pendientes de complemento ({pending.length})</div>
+          {pending.map(t => (
+            <div key={t.id} className="card" style={{ borderLeft: "4px solid var(--amber)" }}>
+              <div className="flex aic jb mb8">
+                <div>
+                  <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+                  <div className="tsm txt2">{fmtDate(t.date)}{t.client ? ` · 🤝 ${t.client}` : ""}</div>
+                  {t.invoiceNumber && <div className="tsm txt2">🧾 {t.invoiceNumber}</div>}
+                </div>
+                <div className="fcol" style={{ alignItems: "flex-end", gap: 4 }}>
+                  <span className="badge ba">PPD — Pdte. complemento</span>
+                  {t.amount > 0 && <span style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</span>}
+                </div>
+              </div>
+              <div className="flex aic gap8 wrap">
+                <div>
+                  <div className="tsm txt2 mb4">Subir complemento de pago</div>
+                  <PhotoBtn label="📎 Complemento SAT" photoKey={[t.id, "complemento"]} compact
+                    onLoad={() => save(t.id, { billingStatus: "pagado", paidDate: today(), complementoSubido: true })} />
+                </div>
+                <button className="btn btn-gr btn-sm mt12" onClick={() => save(t.id, { billingStatus: "pagado", paidDate: today(), complementoSubido: true })}>
+                  ✓ Marcar pagado c/Complemento
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button className="btn btn-g btn-sm mb12" onClick={() => setShowDone(p=>!p)}>
+        {showDone ? "▲ Ocultar" : "▼ Ver"} complementos emitidos ({done.length})
+      </button>
+      {showDone && done.map(t => (
+        <div key={t.id} className="card mb6 flex aic jb" style={{ borderLeft: "4px solid var(--green)" }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+            <div className="tsm txt2">{fmtDate(t.date)} · {t.client} · {t.invoiceNumber}</div>
+            <div className="tsm txt2">Pagado: {fmtDate(t.paidDate)}</div>
+          </div>
+          <div className="flex gap4 aic">
+            <span className="badge bg">✓ Complemento emitido</span>
+            <PhotoBtn label="Ver" photoKey={[t.id, "complemento"]} compact />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -3520,6 +3703,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
     { id: "forecast", l: "📅 Forecast" },
     { id: "gastos", l: "🔍 Análisis gastos" },
     { id: "viajes", l: "🚛 Viajes" },
+    { id: "complementos", l: `📋 Complementos${trips.filter(t=>t.metodoPago==="PPD"&&t.billingStatus==="facturado").length > 0 ? ` (${trips.filter(t=>t.metodoPago==="PPD"&&t.billingStatus==="facturado").length})` : ""}` },
     { id: "clientes", l: "🤝 Clientes" }, { id: "tercerizados", l: "🔗 Tercerizados" }, { id: "cuentas-prov", l: "🚛 C. Proveedor" },
     { id: "financiero", l: "💰 Financiero" }, { id: "conductores", l: "👤 Conductores" },
     { id: "unidades", l: "🚚 Unidades" },
@@ -3540,6 +3724,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} />}
+        {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
         {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
         {tab === "cuentas-prov" && <AdminCuentasProveedor outsourced={outsourced} providers={providers} razones={razones} trips={trips} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
