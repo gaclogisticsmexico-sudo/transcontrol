@@ -3075,6 +3075,48 @@ function PendingSection({ title, color, icon, items, total, emptyMsg, renderItem
   );
 }
 
+function QuickAmountRow({ t, onUpdate, razones }) {
+  const [amt, setAmt] = useState(t.amount ? String(t.amount) : "");
+  const [sinFact, setSinFact] = useState(!!t.sinFactura);
+  const [ret, setRet] = useState(!!t.ivaRetention);
+  const [expanded, setExpanded] = useState(false);
+  const save = () => {
+    const v = parseFloat(amt);
+    if (!isNaN(v) && v > 0) onUpdate(t.id, { amount: v, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+  };
+  return (
+    <div className="card" style={{ background: "var(--bg3)", borderLeft: "3px solid var(--txt2)" }}>
+      <div className="flex aic jb mb6 wrap gap4">
+        <div className="flex aic gap8 wrap">
+          <span className="tsm txt2">{fmtDate(t.date)}</span>
+          <span className="badge bgr">Sin monto</span>
+          <RSBadge id={t.razonSocialId} razones={razones} />
+        </div>
+        <button className="btn btn-g btn-sm" onClick={() => setExpanded(p => !p)}>{expanded ? "▲ Cerrar" : "💲 Asignar monto"}</button>
+      </div>
+      <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+      <div className="tsm txt2 mt4">🤝 {t.client}</div>
+      {expanded && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+          <div className="flex gap8 aic mb8">
+            <Field label="Subtotal sin IVA ($) *" style={{ flex: 1 }}>
+              <input type="number" placeholder="0.00" value={amt} onChange={e => setAmt(e.target.value)} autoFocus />
+            </Field>
+          </div>
+          <IVAToggles sinFactura={sinFact} retention={ret}
+            onToggleSF={() => { setSinFact(p => !p); setRet(false); }}
+            onToggleRet={() => setRet(p => !p)} />
+          <IVACalc base={parseFloat(amt || 0)} sinFactura={sinFact} retention={ret} label="Total a facturar" />
+          <button className="btn btn-a mt10" onClick={() => { save(); setExpanded(false); }}
+            disabled={!amt || isNaN(parseFloat(amt)) || parseFloat(amt) <= 0}>
+            ✓ Guardar monto y continuar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) {
   const [mk, setMk] = useState(nowMon());
   const [selRS, setSelRS] = useState("all");
@@ -3083,20 +3125,21 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) 
   const fo = outsourced.filter(o => o.date.startsWith(mk) && (selRS === "all" || o.razonSocialId === selRS));
   const bs = t => t.billingStatus || "sin_facturar";
 
-  // Four billing buckets
-  const sinFacturar = ft.filter(t => bs(t) === "sin_facturar");
-  const porCobrar = ft.filter(t => bs(t) === "facturado");
-  const sinCompl = ft.filter(t => bs(t) === "pagado");
-  const completos = ft.filter(t => bs(t) === "complemento");
-  const tercPend = fo.filter(o => !o.paid);
+  // Five billing buckets
+  const sinMonto   = ft.filter(t => (!t.amount || t.amount <= 0) && bs(t) === "sin_facturar");
+  const sinFacturar= ft.filter(t => (t.amount > 0) && bs(t) === "sin_facturar");
+  const porCobrar  = ft.filter(t => bs(t) === "facturado");
+  const sinCompl   = ft.filter(t => bs(t) === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido);
+  const completos  = ft.filter(t => bs(t) === "pagado" && (t.metodoPago !== "PPD" || t.complementoSubido));
+  const tercPend   = fo.filter(o => !o.paid);
 
-  // Progress overview
+  // Progress — sinMonto counts as step 0
   const total = ft.length;
   const pct = total > 0 ? Math.round((completos.length / total) * 100) : 100;
   const months = [];
   for (let i = 0; i < 24; i++) {
     const d = new Date(); d.setMonth(d.getMonth() - i);
-    months.push(d.toISOString().slice(0, 7));
+    months.push([d.getFullYear(), String(d.getMonth()+1).padStart(2,'0')].join('-'));
   }
 
   const tripRow = t => (
@@ -3114,11 +3157,12 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) 
         </div>
         <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
         <div className="flex gap8 tsm txt2 wrap mt4">
-          <span>👤 {t.client}</span>
-          <span>{t.amount ? fmt$(t.amount) : <span style={{ color: "var(--amber)" }}>Sin monto</span>}</span>
+          <span>🤝 {t.client}</span>
+          <span style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</span>
+          <span className="txt2">({fmt$(t.amount)} subtotal)</span>
           {t.invoiceNumber && <span>🧾 {t.invoiceNumber}</span>}
           {t.paidDate && <span>Cobrado: {fmtDate(t.paidDate)}</span>}
-          {(bs(t) === "facturado") && <span style={{ color: daysSince(t.date) > 30 ? "var(--red)" : "var(--txt2)" }}>{daysSince(t.date)}d transcurridos</span>}
+          {bs(t) === "facturado" && <span style={{ color: daysSince(t.date) > 30 ? "var(--red)" : "var(--txt2)" }}>{daysSince(t.date)}d transcurridos</span>}
         </div>
         {expandedId === t.id && <BillingPanel trip={t} onUpdate={onUpdate} />}
       </div>
@@ -3169,45 +3213,56 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) 
           <span className="tsm txt2">{completos.length}/{total} servicios completos</span>
         </div>
         <div className="prog mb12"><div className="progf" style={{ width: `${pct}%`, background: pct === 100 ? "var(--green)" : "var(--amber)" }} /></div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8 }}>
           {[
+            ["Sin monto", sinMonto.length, "var(--txt2)"],
             ["Sin facturar", sinFacturar.length, "var(--txt2)"],
             ["Por cobrar", porCobrar.length, "var(--amber)"],
-            ["Sin complemento", sinCompl.length, "var(--blue)"],
+            ["Pdte. complemento", sinCompl.length, "var(--blue)"],
             ["Completados", completos.length, "var(--green)"],
           ].map(([l, n, c]) => (
-            <div key={l} style={{ textAlign: "center", padding: "10px 8px", background: "var(--bg3)", borderRadius: 6 }}>
-              <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 26, fontWeight: 800, color: c }}>{n}</div>
-              <div className="tsm txt2">{l}</div>
+            <div key={l} style={{ textAlign: "center", padding: "10px 6px", background: "var(--bg3)", borderRadius: 6 }}>
+              <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 24, fontWeight: 800, color: c }}>{n}</div>
+              <div className="tsm txt2" style={{ fontSize: 10 }}>{l}</div>
             </div>
           ))}
         </div>
       </div>
 
       <PendingSection
-        title="Sin facturar — pendiente emitir CFDI"
+        title="Paso 1 — Sin monto asignado"
+        color="bgr" icon="💲"
+        items={sinMonto}
+        total={0}
+        emptyMsg="Todos los servicios tienen monto asignado ✓"
+        renderItem={t => <QuickAmountRow key={t.id} t={t} onUpdate={onUpdate} razones={razones} />}
+      />
+      <PendingSection
+        title="Paso 2 — Con monto · pendiente emitir factura CFDI"
         color="bgr" icon="🧾"
         items={sinFacturar}
-        total={sinFacturar.reduce((s, t) => s + (t.amount || 0), 0)}
-        emptyMsg="Todos los servicios tienen factura"
+        total={sinFacturar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
+        emptyMsg="Todos los servicios con monto tienen factura"
         renderItem={tripRow}
       />
       <PendingSection
-        title="Facturados — pendiente de cobro"
+        title="Paso 3 — Facturados · pendiente de cobro"
         color="ba" icon="💰"
         items={porCobrar}
-        total={porCobrar.reduce((s, t) => s + (t.amount || 0), 0)}
+        total={porCobrar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
         emptyMsg="No hay facturas pendientes de cobro"
         renderItem={tripRow}
       />
-      <PendingSection
-        title="Pagados — pendiente complemento de pago SAT"
-        color="bb" icon="📄"
-        items={sinCompl}
-        total={sinCompl.reduce((s, t) => s + (t.amount || 0), 0)}
-        emptyMsg="Todos los pagos tienen complemento emitido"
-        renderItem={tripRow}
-      />
+      {sinCompl.length > 0 && (
+        <PendingSection
+          title="PPD · pendiente complemento de pago SAT"
+          color="bb" icon="📄"
+          items={sinCompl}
+          total={sinCompl.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
+          emptyMsg="Todos los PPD tienen complemento emitido"
+          renderItem={tripRow}
+        />
+      )}
       <PendingSection
         title="Tercerizados — pendiente pagar al proveedor"
         color="br" icon="🔴"
