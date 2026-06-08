@@ -3691,7 +3691,341 @@ function AdminComplementos({ trips, onUpdate }) {
   );
 }
 
-function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onLogout }) {
+function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSaveSocios, onAddDistribution, onUpdDistribution }) {
+  const [tab, setTab] = useState("resumen");
+  const [periodo, setPeriodo] = useState(nowMon());
+  const [newSocio, setNewSocio] = useState({ nombre: "", rol: "" });
+  const [confPeriodo, setConfPeriodo] = useState(false);
+  const [payModal, setPayModal] = useState(null); // { distId, socioId, nombre }
+  const [payAmt, setPayAmt] = useState("");
+  const [payDate, setPayDate] = useState(today());
+
+  const curMon = nowMon();
+
+  // ── Calculations ──
+  const calcPeriodo = (p) => {
+    const pTrips = trips.filter(t => t.date.startsWith(p));
+    const ingresos = pTrips.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    const gastosGen = expenses.filter(e => (e.month || e.date?.slice(0,7)) === p).reduce((s, e) => s + (e.amount||0), 0);
+    const gastosViaje = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    const tercerizados = outsourced.filter(o => (o.date||"").startsWith(p)).reduce((s, o) => s + (o.providerAmount||0), 0);
+    const totalGastos = gastosGen + gastosViaje + tercerizados;
+    const utilidad = ingresos - totalGastos;
+    // Cobros y pagos efectivos del periodo
+    const cobrado = pTrips.filter(t => t.billingStatus === "pagado").reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    const porCobrar = pTrips.filter(t => t.billingStatus !== "pagado" && t.amount > 0).reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    const pagadoProv = outsourced.filter(o => (o.date||"").startsWith(p) && o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
+    const porPagarProv = outsourced.filter(o => (o.date||"").startsWith(p) && !o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
+    const pagadoGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid === true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    const porPagarGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    return { ingresos, gastosGen, gastosViaje, tercerizados, totalGastos, utilidad, cobrado, porCobrar, pagadoProv, porPagarProv, pagadoGV, porPagarGV, nTrips: pTrips.length };
+  };
+
+  // Outstanding from ALL past periods (not current month)
+  const pastPendingReceivable = trips
+    .filter(t => !t.date.startsWith(curMon) && t.billingStatus !== "pagado" && (t.amount||0) > 0)
+    .reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+  const pastPendingPayable = outsourced
+    .filter(o => !(o.date||"").startsWith(curMon) && !o.paid)
+    .reduce((s, o) => s + (o.providerAmount||0), 0)
+    + trips.filter(t => !t.date.startsWith(curMon))
+    .reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+
+  // Total distributed so far across all periods
+  const totalDistributed = distributions.reduce((s, d) => s + (d.pagos||[]).reduce((ss, p) => ss + (p.pagado ? (p.montosPagados||[]).reduce((sss, x) => sss + x.monto, 0) : 0), 0), 0);
+
+  const calc = calcPeriodo(periodo);
+  const dist = distributions.find(d => d.periodo === periodo);
+  const nSocios = socios.length || 3;
+  const utilPorSocio = nSocios > 0 ? calc.utilidad / nSocios : 0;
+
+  const cerrarPeriodo = () => {
+    if (dist) return;
+    const pagos = (socios.length > 0 ? socios : [{ id: "s1", nombre: "Socio 1" }, { id: "s2", nombre: "Socio 2" }, { id: "s3", nombre: "Socio 3" }])
+      .map(s => ({ socioId: s.id, nombre: s.nombre, utilidad: utilPorSocio, montosPagados: [], pendiente: utilPorSocio }));
+    onAddDistribution({ id: genId(), periodo, fechaCierre: today(), resumen: { ...calc, nSocios }, pagos });
+    setConfPeriodo(false);
+  };
+
+  const registrarPago = () => {
+    if (!payModal || !payAmt) return;
+    const amt = parseFloat(payAmt);
+    if (isNaN(amt) || amt <= 0) return;
+    const d = distributions.find(x => x.id === payModal.distId);
+    if (!d) return;
+    const updPagos = d.pagos.map(p => {
+      if (p.socioId !== payModal.socioId) return p;
+      const nuevos = [...(p.montosPagados||[]), { monto: amt, fecha: payDate, id: genId() }];
+      const totalPagado = nuevos.reduce((s, x) => s + x.monto, 0);
+      return { ...p, montosPagados: nuevos, pendiente: p.utilidad - totalPagado, pagado: totalPagado >= p.utilidad };
+    });
+    onUpdDistribution(payModal.distId, { pagos: updPagos });
+    setPayModal(null); setPayAmt(""); setPayDate(today());
+  };
+
+  const mesesDisp = [...new Set(trips.map(t => t.date.slice(0,7)))].sort().reverse();
+
+  return (
+    <div className="ap">
+      <div className="stitle mb4">👥 Socios y Utilidades</div>
+      <div className="pill-tabs mb12">
+        <button className={`pill-tab ${tab==="resumen"?"act":""}`} onClick={()=>setTab("resumen")}>📊 Periodo</button>
+        <button className={`pill-tab ${tab==="historico"?"act":""}`} onClick={()=>setTab("historico")}>📋 Histórico</button>
+        <button className={`pill-tab ${tab==="pendientes"?"act":""}`} onClick={()=>setTab("pendientes")}>⏳ Pendientes</button>
+        <button className={`pill-tab ${tab==="socios"?"act":""}`} onClick={()=>setTab("socios")}>⚙ Socios</button>
+      </div>
+
+      {/* ── RESUMEN DEL PERIODO ── */}
+      {tab === "resumen" && (
+        <div>
+          <div className="flex aic gap8 mb12">
+            <Field label="Periodo"><select value={periodo} onChange={e=>setPeriodo(e.target.value)} style={{minWidth:140}}>
+              {mesesDisp.map(m=><option key={m} value={m}>{fmtDate(m+"-01").replace("01 ","")}</option>)}
+            </select></Field>
+          </div>
+
+          {calc.nTrips === 0 ? <Empty title="Sin viajes en este periodo" sub="Selecciona otro mes" /> : (<>
+          {/* Ingresos / Gastos */}
+          <div className="g2 mb12">
+            <div className="card" style={{ borderLeft: "4px solid var(--green)" }}>
+              <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>💚 Ingresos del periodo</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "var(--green)" }}>{fmt$(calc.ingresos)}</div>
+              <div className="tsm txt2 mt4">{calc.nTrips} viajes · Cobrado: {fmt$(calc.cobrado)}</div>
+              {calc.porCobrar > 0 && <div className="tsm" style={{ color: "var(--amber)" }}>⏳ Por cobrar: {fmt$(calc.porCobrar)}</div>}
+            </div>
+            <div className="card" style={{ borderLeft: "4px solid var(--red)" }}>
+              <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>🔴 Gastos del periodo</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "var(--red)" }}>{fmt$(calc.totalGastos)}</div>
+              <div className="tsm txt2 mt4">Generales: {fmt$(calc.gastosGen)} · Viajes: {fmt$(calc.gastosViaje)}</div>
+              <div className="tsm txt2">Tercerizados: {fmt$(calc.tercerizados)}</div>
+              {(calc.porPagarProv + calc.porPagarGV) > 0 && <div className="tsm" style={{ color: "var(--amber)" }}>⏳ Por pagar: {fmt$(calc.porPagarProv + calc.porPagarGV)}</div>}
+            </div>
+          </div>
+
+          {/* Utilidad */}
+          <div className="card mb12" style={{ background: calc.utilidad >= 0 ? "#22c55e0a" : "#ef44440a", borderLeft: `4px solid ${calc.utilidad >= 0 ? "var(--green)" : "var(--red)"}` }}>
+            <div className="flex aic jb mb8">
+              <div className="tsm txt2" style={{ fontWeight: 700 }}>✨ Utilidad neta del periodo</div>
+              <span style={{ fontSize: 24, fontWeight: 800, color: calc.utilidad >= 0 ? "var(--green)" : "var(--red)" }}>{fmt$(calc.utilidad)}</span>
+            </div>
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+              <div className="tsm txt2 mb6" style={{ fontWeight: 700 }}>Por socio ({nSocios} partes iguales):</div>
+              <div className="flex gap8 wrap">
+                {(socios.length > 0 ? socios : [{id:"s1",nombre:"Socio 1"},{id:"s2",nombre:"Socio 2"},{id:"s3",nombre:"Socio 3"}]).map(s => (
+                  <div key={s.id} className="card" style={{ flex: 1, minWidth: 100, textAlign: "center", background: "var(--bg3)" }}>
+                    <div className="tsm txt2">{s.nombre}</div>
+                    <div style={{ fontWeight: 800, fontSize: 18, color: "var(--green)" }}>{fmt$(utilPorSocio)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Cierre del periodo */}
+          {!dist ? (
+            <div className="card" style={{ background: "var(--bg3)" }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>📌 Cerrar periodo y registrar utilidades</div>
+              <div className="tsm txt2 mb10">Al cerrar el periodo se registra la utilidad de cada socio para su seguimiento de cobro. Puedes cerrar aunque haya montos pendientes — se registra lo devengado.</div>
+              {!confPeriodo
+                ? <button className="btn btn-a" onClick={() => setConfPeriodo(true)}>Cerrar periodo {fmtDate(periodo+"-01").replace("01 ","")}</button>
+                : <div className="flex gap8 aic">
+                    <span className="tsm" style={{ color: "var(--amber)" }}>¿Confirmas cerrar el periodo?</span>
+                    <button className="btn btn-a btn-sm" onClick={cerrarPeriodo}>✓ Confirmar</button>
+                    <button className="btn btn-g btn-sm" onClick={() => setConfPeriodo(false)}>Cancelar</button>
+                  </div>
+              }
+            </div>
+          ) : (
+            <div className="card" style={{ background: "#22c55e0a", border: "1px solid var(--green)" }}>
+              <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 8 }}>✓ Periodo cerrado — {fmtDate(dist.fechaCierre)}</div>
+              {dist.pagos.map(p => {
+                const pagado = (p.montosPagados||[]).reduce((s,x)=>s+x.monto,0);
+                return (
+                  <div key={p.socioId} className="flex aic jb" style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{p.nombre}</div>
+                      <div className="tsm txt2">Utilidad: {fmt$(p.utilidad)} · Pagado: {fmt$(pagado)} · Pendiente: <strong style={{ color: p.pendiente <= 0 ? "var(--green)" : "var(--amber)" }}>{fmt$(Math.max(0, p.utilidad - pagado))}</strong></div>
+                    </div>
+                    <button className="btn btn-a btn-sm" onClick={() => { setPayModal({ distId: dist.id, socioId: p.socioId, nombre: p.nombre }); setPayAmt(""); setPayDate(today()); }}>
+                      + Pago
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Pay modal */}
+          {payModal && (
+            <div className="card mt12" style={{ border: "1px solid var(--green)", background: "#22c55e08" }}>
+              <div style={{ fontWeight: 700, marginBottom: 10 }}>💸 Registrar pago a {payModal.nombre}</div>
+              <div className="g2 mb10">
+                <Field label="Monto pagado ($)"><input type="number" value={payAmt} onChange={e=>setPayAmt(e.target.value)} placeholder="0.00" autoFocus /></Field>
+                <Field label="Fecha del pago"><input type="date" value={payDate} onChange={e=>setPayDate(e.target.value)} /></Field>
+              </div>
+              <div className="flex gap8">
+                <button className="btn btn-a" onClick={registrarPago}>✓ Registrar pago</button>
+                <button className="btn btn-g" onClick={() => setPayModal(null)}>Cancelar</button>
+              </div>
+            </div>
+          )}
+          </>)}
+        </div>
+      )}
+
+      {/* ── HISTÓRICO DE DISTRIBUCIONES ── */}
+      {tab === "historico" && (
+        <div>
+          {distributions.length === 0 ? <Empty title="Sin periodos cerrados" sub="Cierra un periodo en la pestaña Periodo para ver el historial" /> : (
+            <div className="fcol gap12">
+              {[...distributions].sort((a,b)=>b.periodo.localeCompare(a.periodo)).map(d => {
+                const totalPagado = (d.pagos||[]).reduce((s,p) => s + (p.montosPagados||[]).reduce((ss,x)=>ss+x.monto,0), 0);
+                const totalUtilidad = (d.pagos||[]).reduce((s,p)=>s+p.utilidad,0);
+                return (
+                  <div key={d.id} className="card">
+                    <div className="flex aic jb mb8">
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 16 }}>{fmtDate(d.periodo+"-01").replace("01 ","")}</div>
+                        <div className="tsm txt2">Cerrado: {fmtDate(d.fechaCierre)}</div>
+                      </div>
+                      <div className="fcol" style={{ alignItems: "flex-end" }}>
+                        <div style={{ fontWeight: 800, color: "var(--green)", fontSize: 16 }}>{fmt$(d.resumen?.utilidad||0)}</div>
+                        <div className="tsm txt2">Utilidad neta</div>
+                      </div>
+                    </div>
+                    {(d.pagos||[]).map(p => {
+                      const pagado = (p.montosPagados||[]).reduce((s,x)=>s+x.monto,0);
+                      const pendiente = Math.max(0, p.utilidad - pagado);
+                      return (
+                        <div key={p.socioId}>
+                          <div className="flex aic jb" style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+                            <div>
+                              <div style={{ fontWeight: 600 }}>{p.nombre}</div>
+                              <div className="tsm txt2">Utilidad: {fmt$(p.utilidad)} · Pagado: {fmt$(pagado)}</div>
+                            </div>
+                            <div className="flex gap4 aic">
+                              <span className={`badge ${pendiente <= 0 ? "bg" : "ba"}`}>{pendiente <= 0 ? "✓ Liquidado" : `Pdte: ${fmt$(pendiente)}`}</span>
+                              {pendiente > 0 && <button className="btn btn-a btn-sm" onClick={() => { setPayModal({ distId: d.id, socioId: p.socioId, nombre: p.nombre }); setPayAmt(""); setPayDate(today()); setTab("resumen"); setPeriodo(d.periodo); }}>+ Pago</button>}
+                            </div>
+                          </div>
+                          {(p.montosPagados||[]).map(x => (
+                            <div key={x.id} className="tsm txt2" style={{ paddingLeft: 12 }}>💸 {fmt$(x.monto)} — {fmtDate(x.fecha)}</div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {payModal && (
+            <div className="card mt12" style={{ border: "1px solid var(--green)", background: "#22c55e08" }}>
+              <div style={{ fontWeight: 700, marginBottom: 10 }}>💸 Registrar pago a {payModal.nombre}</div>
+              <div className="g2 mb10">
+                <Field label="Monto ($)"><input type="number" value={payAmt} onChange={e=>setPayAmt(e.target.value)} placeholder="0.00" autoFocus /></Field>
+                <Field label="Fecha"><input type="date" value={payDate} onChange={e=>setPayDate(e.target.value)} /></Field>
+              </div>
+              <div className="flex gap8">
+                <button className="btn btn-a" onClick={registrarPago}>✓ Registrar</button>
+                <button className="btn btn-g" onClick={()=>setPayModal(null)}>Cancelar</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── PENDIENTES HISTÓRICOS ── */}
+      {tab === "pendientes" && (
+        <div>
+          <div className="g2 mb12">
+            <div className="card" style={{ borderLeft: "4px solid var(--amber)" }}>
+              <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>⏳ Por cobrar (periodos anteriores)</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "var(--amber)" }}>{fmt$(pastPendingReceivable)}</div>
+              <div className="tsm txt2 mt4">Viajes facturados o sin cobrar de meses anteriores al actual</div>
+            </div>
+            <div className="card" style={{ borderLeft: "4px solid var(--red)" }}>
+              <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>⏳ Por pagar (periodos anteriores)</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "var(--red)" }}>{fmt$(pastPendingPayable)}</div>
+              <div className="tsm txt2 mt4">Proveedores y gastos de viaje de meses anteriores sin pagar</div>
+            </div>
+          </div>
+
+          {/* Net disponible */}
+          <div className="card mb16" style={{ background: (pastPendingReceivable - pastPendingPayable) >= 0 ? "#22c55e08" : "#ef444408", borderLeft: `4px solid ${(pastPendingReceivable - pastPendingPayable) >= 0 ? "var(--green)" : "var(--red)"}` }}>
+            <div className="flex aic jb">
+              <div>
+                <div style={{ fontWeight: 700 }}>Neto pendiente de periodos anteriores</div>
+                <div className="tsm txt2">Por cobrar − Por pagar</div>
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: (pastPendingReceivable - pastPendingPayable) >= 0 ? "var(--green)" : "var(--red)" }}>
+                {fmt$(pastPendingReceivable - pastPendingPayable)}
+              </div>
+            </div>
+          </div>
+
+          {/* List of uncollected past trips */}
+          <div className="stitle" style={{ fontSize: 14 }}>Viajes sin cobrar de periodos anteriores</div>
+          {trips.filter(t => !t.date.startsWith(curMon) && t.billingStatus !== "pagado" && (t.amount||0) > 0)
+            .sort((a,b)=>a.date.localeCompare(b.date))
+            .map(t => (
+              <div key={t.id} className="card mb6 flex aic jb">
+                <div>
+                  <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+                  <div className="tsm txt2">{fmtDate(t.date)} · {t.client}</div>
+                  <BillingBadge v={t.billingStatus||"sin_facturar"} mp={t.metodoPago} />
+                </div>
+                <div style={{ fontWeight: 800, color: "var(--amber)", textAlign: "right" }}>
+                  {fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}
+                </div>
+              </div>
+            ))
+          }
+          {pastPendingReceivable === 0 && <Empty title="Sin cobros pendientes de periodos anteriores" sub="¡Todo cobrado! 🎉" />}
+        </div>
+      )}
+
+      {/* ── CONFIGURACIÓN DE SOCIOS ── */}
+      {tab === "socios" && (
+        <div>
+          <div className="tsm txt2 mb12">Define los socios y sus porcentajes de participación en las utilidades.</div>
+          <div className="card mb12">
+            <Field label="Nombre del socio">
+              <input value={newSocio.nombre} onChange={e=>setNewSocio(p=>({...p,nombre:e.target.value}))} placeholder="Nombre completo" />
+            </Field>
+            <Field label="Rol (opcional)">
+              <input value={newSocio.rol} onChange={e=>setNewSocio(p=>({...p,rol:e.target.value}))} placeholder="Ej: Director, Operaciones..." />
+            </Field>
+            <button className="btn btn-a mt8" onClick={() => { if (!newSocio.nombre) return; onSaveSocios([...socios, { id: genId(), ...newSocio, activo: true }]); setNewSocio({ nombre: "", rol: "" }); }}>
+              <Ico path={IC.plus} size={14} /> Agregar socio
+            </button>
+          </div>
+          <div className="fcol gap8">
+            {socios.map((s, i) => (
+              <div key={s.id} className="card flex aic jb">
+                <div>
+                  <div style={{ fontWeight: 700 }}>{s.nombre}</div>
+                  <div className="tsm txt2">{s.rol || "Socio"} · {(100 / socios.length).toFixed(1)}%</div>
+                </div>
+                <div className="flex gap4">
+                  <button className="btn btn-g btn-sm" onClick={() => onSaveSocios(socios.filter(x=>x.id!==s.id))}>🗑</button>
+                </div>
+              </div>
+            ))}
+            {socios.length === 0 && <div className="card tsm txt2" style={{ textAlign: "center", padding: 16 }}>Sin socios configurados. Se usará el valor por defecto de 3 socios iguales.</div>}
+          </div>
+          {socios.length > 0 && (
+            <div className="card mt8" style={{ background: "var(--bg3)" }}>
+              <div className="tsm txt2">La utilidad se divide en <strong>{socios.length} partes iguales</strong> ({(100/socios.length).toFixed(1)}% cada socio). Para porcentajes desiguales, contáctanos para implementarlo.</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -3699,6 +4033,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
     + outsourced.filter(o => o.date.startsWith(mk) && !o.paid).length;
   const tabs = [
     { id: "dashboard", l: "📊 Dashboard" },
+    { id: "socios", l: "👥 Socios" },
     { id: "pendientes", l: `📋 Cierre${pendCount > 0 ? ` (${pendCount})` : ""}` },
     { id: "forecast", l: "📅 Forecast" },
     { id: "gastos", l: "🔍 Análisis gastos" },
@@ -3711,15 +4046,31 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
     { id: "inspecciones", l: `🔧 Inspecciones${activeIssues > 0 ? ` (${activeIssues})` : ""}` },
     { id: "disponib", l: "📅 Disponibilidad" }, { id: "config", l: "⚙ Config" },
   ];
+
+  // Export all data as JSON backup
+  const exportBackup = () => {
+    const data = { trips, expenses, outsourced, vehicles, drivers, razones, clients, providers, instructions, schedule, socios, distributions, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url;
+    a.download = `transcontrol-backup-${today()}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
       <div className="hdr">
         <div className="logo">⬡ TRANSCONTROL</div>
-        <div className="flex aic gap8"><span className="badge ba">Admin</span><button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /> Salir</button></div>
+        <div className="flex aic gap8">
+          <span className="badge ba">Admin</span>
+          <button className="btn btn-g btn-sm" title="Exportar copia de seguridad" onClick={exportBackup}>💾</button>
+          <button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /> Salir</button>
+        </div>
       </div>
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
+        {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
@@ -3753,6 +4104,8 @@ export default function App() {
   const [instructions, setInstructions] = useState([]); const [schedule, setSchedule] = useState([]);
   const [instant, setInstant] = useState({ vehicles: [], drivers: [] });
   const [statusRequests, setStatusRequests] = useState([]);
+  const [socios, setSocios] = useState([]);
+  const [distributions, setDistributions] = useState([]);
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
@@ -3768,12 +4121,14 @@ export default function App() {
         ld("tr:razones",DEF_RS), ld("tr:clients",[]), ld("tr:providers",[]),
         ld("tr:instructions",[]), ld("tr:schedule",[]),
         ld("tr:instant",{vehicles:[],drivers:[]}), ld("tr:status_requests",[]),
-      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq]) => {
+        ld("tr:socios",[]), ld("tr:distributions",[]),
+      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq,soc,dist]) => {
         setTrips(t); setInspections(i); setVehicles(v); setDrivers(d);
         setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
         setInstructions(ins); setSchedule(sc);
         setInstant(inst||{vehicles:[],drivers:[]});
         setStatusRequests(sreq||[]);
+        setSocios(soc||[]); setDistributions(dist||[]);
         if (info.rol === "chofer") {
           // 1. Check saved email→driverId mapping in Firestore
           const emailMap = await ld("tr:email_driver_map", {});
@@ -3819,6 +4174,10 @@ export default function App() {
   const updateInstant = u => { setInstant(u); sv("tr:instant", u); };
   const addStatusRequest = req => { const u = [...statusRequests, req]; setStatusRequests(u); sv("tr:status_requests", u); };
   const updStatusRequest = (id, patch) => { const u = statusRequests.map(r => r.id === id ? { ...r, ...patch } : r); setStatusRequests(u); sv("tr:status_requests", u); };
+  const saveSocios = s => { setSocios(s); sv("tr:socios", s); };
+  const saveDistributions = d => { setDistributions(d); sv("tr:distributions", d); };
+  const addDistribution = d => { const u = [...distributions, d]; setDistributions(u); sv("tr:distributions", u); };
+  const updDistribution = (id, patch) => { const u = distributions.map(d => d.id === id ? { ...d, ...patch } : d); setDistributions(u); sv("tr:distributions", u); };
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -3863,11 +4222,13 @@ export default function App() {
     <AdminApp trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
+      socios={socios} distributions={distributions}
       onAdd={addTrip} onUpdate={updTrip} onDelete={delTrip} onAddIns={addIns}
       onSaveExpenses={saveExps} onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut}
       onSaveVehicles={saveVehicles} onSaveDrivers={saveDrivers} onSaveRazones={saveRazones}
       onSaveClients={saveClients} onSaveProviders={saveProviders}
       onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
+      onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
   );
 }
