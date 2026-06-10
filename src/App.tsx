@@ -1810,6 +1810,16 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
   const dStats = drivers.map(d=>({...d,cnt:ft.filter(t=>t.driverId===d.id&&t.date.startsWith(mk)).length})).sort((a,b)=>b.cnt-a.cnt);
   const maxC = dStats[0]?.cnt||1;
   const clientStats = [...new Set(mt.map(t=>t.client).filter(Boolean))].map(c=>({c,total:mt.filter(t=>t.client===c).reduce((s,t)=>s+(t.amount||0),0),count:mt.filter(t=>t.client===c).length})).sort((a,b)=>b.total-a.total).slice(0,5);
+
+  // Driver activity
+  const todayStr = today();
+  const yest = (() => { const d = new Date(); d.setDate(d.getDate()-1); return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-'); })();
+  const driversToday = new Set(trips.filter(t=>t.date===todayStr).map(t=>t.driverId));
+  const driversYest = new Set(trips.filter(t=>t.date===yest).map(t=>t.driverId));
+  const lastTripDate = d => trips.filter(t=>t.driverId===d.id).sort((a,b)=>b.date.localeCompare(a.date))[0]?.date || null;
+  const daysSinceTrip = d => { const ld = lastTripDate(d); if (!ld) return null; const diff = (new Date(todayStr) - new Date(ld)) / 86400000; return Math.floor(diff); };
+  const activeDrivers = drivers.filter(d => d.active !== false);
+  const inactiveDrivers = activeDrivers.map(d => ({ ...d, days: daysSinceTrip(d) })).filter(d => d.days === null || d.days >= 1).sort((a,b) => (b.days??999) - (a.days??999));
   return (
     <div className="ap">
       <div className="flex aic jb mb12 wrap gap8">
@@ -1830,6 +1840,50 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
       </div>
       <TrendChart trips={trips} expenses={expenses} outsourced={outsourced} selRS={selRS}/>
       <AgingCartera trips={trips} selRS={selRS}/>
+
+      {/* Driver activity */}
+      <div className="card mb12">
+        <div className="flex aic jb mb10">
+          <div style={{ fontWeight: 700 }}>🧑‍✈️ Actividad de choferes hoy</div>
+          <span className="tsm txt2">{todayStr}</span>
+        </div>
+        <div className="g2 mb10">
+          <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--bg3)", borderRadius: 6 }}>
+            <div style={{ fontSize: 28, fontWeight: 800, color: "var(--green)" }}>{driversToday.size}</div>
+            <div className="tsm txt2">Subieron viaje hoy</div>
+            {[...driversToday].map(id => { const d = drivers.find(x=>x.id===id); return d ? <div key={id} className="tsm" style={{color:"var(--green)"}}>✓ {d.name}</div> : null; })}
+          </div>
+          <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--bg3)", borderRadius: 6 }}>
+            <div style={{ fontSize: 28, fontWeight: 800, color: "var(--amber)" }}>{driversYest.size}</div>
+            <div className="tsm txt2">Subieron ayer</div>
+            {[...driversYest].map(id => { const d = drivers.find(x=>x.id===id); return d ? <div key={id} className="tsm txt2">✓ {d.name}</div> : null; })}
+          </div>
+        </div>
+        {inactiveDrivers.length > 0 && (
+          <div>
+            <div className="tsm txt2 mb6" style={{ fontWeight: 700, color: "var(--amber)" }}>⚠ Sin viaje registrado hoy:</div>
+            {inactiveDrivers.map(d => (
+              <div key={d.id} className="flex aic jb" style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+                <div>
+                  <span style={{ fontWeight: 600 }}>{d.name}</span>
+                  <span className="tsm txt2 ml8">
+                    {d.days === null ? "Sin viajes registrados" : d.days === 1 ? "Último viaje ayer" : `Último viaje hace ${d.days} días`}
+                  </span>
+                  {d.days !== null && d.days >= 3 && <span className="badge br ml6">Inactivo {d.days}d</span>}
+                </div>
+                {d.phone && (
+                  <a href={`https://wa.me/521${d.phone}?text=${encodeURIComponent(`Hola ${d.name.split(" ")[0]}, recuerda registrar tus viajes del día en la app TransControl.`)}`}
+                    target="_blank" rel="noreferrer" className="btn btn-g btn-sm" style={{ textDecoration: "none" }}>
+                    💬 Recordar
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {inactiveDrivers.length === 0 && <div className="tsm" style={{ color: "var(--green)" }}>✓ Todos los choferes registraron viaje hoy</div>}
+      </div>
+
       <div className="g2" style={{gap:16}}>
         <div>
           <div className="stitle">Conductores este mes</div>
@@ -3075,14 +3129,32 @@ function PendingSection({ title, color, icon, items, total, emptyMsg, renderItem
   );
 }
 
-function QuickAmountRow({ t, onUpdate, razones }) {
-  const [amt, setAmt] = useState(t.amount ? String(t.amount) : "");
+function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
+  const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
+  const suggestion = tarifario?.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key);
+  const [base, setBase] = useState(t.amountBase || (suggestion?.base) || "");
+  const [extras, setExtras] = useState(t.amountExtras || (suggestion?.extras) || []);
+  const [newDesc, setNewDesc] = useState("");
+  const [newAmt, setNewAmt] = useState("");
   const [sinFact, setSinFact] = useState(!!t.sinFactura);
   const [ret, setRet] = useState(!!t.ivaRetention);
   const [expanded, setExpanded] = useState(false);
+  const [saveTar, setSaveTar] = useState(true);
+  const baseNum = parseFloat(base) || 0;
+  const extrasTotal = extras.reduce((s, e) => s + (e.amount||0), 0);
+  const total = baseNum + extrasTotal;
+  const addExtra = () => {
+    const a = parseFloat(newAmt);
+    if (!newDesc || isNaN(a) || a <= 0) return;
+    setExtras(p => [...p, { id: genId(), desc: newDesc, amount: a }]);
+    setNewDesc(""); setNewAmt("");
+  };
   const save = () => {
-    const v = parseFloat(amt);
-    if (!isNaN(v) && v > 0) onUpdate(t.id, { amount: v, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+    if (total <= 0) return;
+    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+    if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
+      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
+    setExpanded(false);
   };
   return (
     <div className="card" style={{ background: "var(--bg3)", borderLeft: "3px solid var(--txt2)" }}>
@@ -3095,29 +3167,61 @@ function QuickAmountRow({ t, onUpdate, razones }) {
         <button className="btn btn-g btn-sm" onClick={() => setExpanded(p => !p)}>{expanded ? "▲ Cerrar" : "💲 Asignar monto"}</button>
       </div>
       <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
-      <div className="tsm txt2 mt4">🤝 {t.client}</div>
+      <div className="tsm txt2 mt2">🤝 {t.client}</div>
+      {suggestion && !expanded && (
+        <div className="tsm mt6" style={{ color: "var(--green)" }}>
+          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras||[]).reduce((s,e)=>s+e.amount,0))} (servicio {fmt$(suggestion.base)}{suggestion.extras?.length ? ` + ${suggestion.extras.length} extra(s)` : ""})
+          <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras||[]); setExpanded(true); }}>Usar</button>
+        </div>
+      )}
       {expanded && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-          <div className="flex gap8 aic mb8">
-            <Field label="Subtotal sin IVA ($) *" style={{ flex: 1 }}>
-              <input type="number" placeholder="0.00" value={amt} onChange={e => setAmt(e.target.value)} autoFocus />
-            </Field>
+          <Field label="Servicio base ($) *">
+            <input type="number" placeholder="0.00" value={base} onChange={e => setBase(e.target.value)} autoFocus />
+          </Field>
+          {/* Extras */}
+          {extras.length > 0 && (
+            <div className="fcol gap4 mb8 mt4">
+              {extras.map(e => (
+                <div key={e.id} className="flex aic gap4">
+                  <span className="tsm" style={{ flex: 1 }}>{e.desc}</span>
+                  <span className="tsm txt2">{fmt$(e.amount)}</span>
+                  <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} onClick={() => setExtras(p => p.filter(x => x.id !== e.id))}>🗑</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap4 mb8 mt4">
+            <input placeholder="Descripción del extra" value={newDesc} onChange={e => setNewDesc(e.target.value)} style={{ flex: 2 }} />
+            <input type="number" placeholder="$0" value={newAmt} onChange={e => setNewAmt(e.target.value)} style={{ flex: 1, minWidth: 0 }} onKeyDown={e => e.key === "Enter" && addExtra()} />
+            <button className="btn btn-g btn-sm" onClick={addExtra}><Ico path={IC.plus} size={14} /></button>
           </div>
+          {total > 0 && (
+            <div className="flex aic jb mb8 p8" style={{ background: "var(--bg)", borderRadius: 6 }}>
+              <span className="tsm txt2">Total subtotal:</span>
+              <span style={{ fontWeight: 800 }}>{fmt$(total)}
+                {extras.length > 0 && <span className="tsm txt2"> ({fmt$(baseNum)} servicio + {fmt$(extrasTotal)} extras)</span>}
+              </span>
+            </div>
+          )}
           <IVAToggles sinFactura={sinFact} retention={ret}
             onToggleSF={() => { setSinFact(p => !p); setRet(false); }}
             onToggleRet={() => setRet(p => !p)} />
-          <IVACalc base={parseFloat(amt || 0)} sinFactura={sinFact} retention={ret} label="Total a facturar" />
-          <button className="btn btn-a mt10" onClick={() => { save(); setExpanded(false); }}
-            disabled={!amt || isNaN(parseFloat(amt)) || parseFloat(amt) <= 0}>
-            ✓ Guardar monto y continuar
-          </button>
+          <IVACalc base={total} sinFactura={sinFact} retention={ret} label="Total a facturar" />
+          {t.client && t.origin && t.destination && (
+            <div className="flex aic gap8 mt8">
+              <ChkBox checked={saveTar} onChange={() => setSaveTar(p=>!p)} />
+              <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination})</span>
+            </div>
+          )}
+          <button className="btn btn-a mt10" onClick={save} disabled={total <= 0}>✓ Guardar monto y continuar</button>
         </div>
       )}
     </div>
   );
 }
 
-function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) {
+function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, tarifario, onUpsertTarifa }) {
   const [mk, setMk] = useState(nowMon());
   const [selRS, setSelRS] = useState("all");
   const [expandedId, setExpandedId] = useState(null);
@@ -3235,7 +3339,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut }) 
         items={sinMonto}
         total={0}
         emptyMsg="Todos los servicios tienen monto asignado ✓"
-        renderItem={t => <QuickAmountRow key={t.id} t={t} onUpdate={onUpdate} razones={razones} />}
+        renderItem={t => <QuickAmountRow key={t.id} t={t} onUpdate={onUpdate} razones={razones} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
       />
       <PendingSection
         title="Paso 2 — Con monto · pendiente emitir factura CFDI"
@@ -3746,6 +3850,108 @@ function AdminComplementos({ trips, onUpdate }) {
   );
 }
 
+function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete }) {
+  const [search, setSearch] = useState("");
+  const [selClient, setSelClient] = useState("all");
+  const [editId, setEditId] = useState(null);
+  const [editData, setEditData] = useState({});
+  const clientNames = [...new Set(tarifario.map(t => t.clientName))].sort();
+  const filtered = tarifario.filter(t =>
+    (selClient === "all" || t.clientName === selClient) &&
+    (t.clientName.toLowerCase().includes(search.toLowerCase()) ||
+     t.origin.toLowerCase().includes(search.toLowerCase()) ||
+     t.destination.toLowerCase().includes(search.toLowerCase()))
+  ).sort((a, b) => a.clientName.localeCompare(b.clientName) || a.origin.localeCompare(b.origin));
+
+  // Import from trip history — find client+route combinations not yet in tarifario
+  const importFromHistory = () => {
+    const map = {};
+    trips.filter(t => t.client && t.origin && t.destination && t.amount > 0).forEach(t => {
+      const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
+      if (!map[key] || t.date > map[key].date) map[key] = t;
+    });
+    let added = 0;
+    Object.values(map).forEach(t => {
+      const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
+      if (!tarifario.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key)) {
+        onUpsertTarifa(t.client, t.origin, t.destination, t.amountBase || t.amount, t.amountExtras || []);
+        added++;
+      }
+    });
+    alert(added > 0 ? `Se importaron ${added} ruta(s) del historial de viajes.` : "No hay rutas nuevas para importar.");
+  };
+
+  return (
+    <div className="ap">
+      <div className="flex aic jb mb12 wrap gap8">
+        <div className="stitle" style={{ margin: 0 }}>📋 Tarifario por Cliente / Ruta</div>
+        <div className="flex gap8">
+          <button className="btn btn-g btn-sm" onClick={importFromHistory}>⬇ Importar del historial</button>
+        </div>
+      </div>
+      <div className="tsm txt2 mb12">Precios de referencia por cliente y ruta. Se actualizan automáticamente al asignar montos en el cierre.</div>
+
+      <div className="g2 mb12">
+        <Field label="Buscar"><input placeholder="Cliente, origen o destino..." value={search} onChange={e => setSearch(e.target.value)} /></Field>
+        <Field label="Filtrar por cliente">
+          <select value={selClient} onChange={e => setSelClient(e.target.value)}>
+            <option value="all">Todos los clientes</option>
+            {clientNames.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div>
+          <Empty title="Sin tarifas registradas" sub="Asigna montos en el Cierre mensual para poblar el tarifario, o usa 'Importar del historial'" />
+        </div>
+      ) : (
+        <div className="fcol gap8">
+          {filtered.map(tar => {
+            const extTotal = (tar.extras||[]).reduce((s,e) => s+e.amount, 0);
+            const total = tar.base + extTotal;
+            return (
+              <div key={tar.id} className="card">
+                <div className="flex aic jb mb4">
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{tar.clientName}</div>
+                    <div style={{ fontWeight: 600, color: "var(--txt2)" }}>{tar.origin} → {tar.destination}</div>
+                  </div>
+                  <div className="fcol" style={{ alignItems: "flex-end" }}>
+                    <div style={{ fontWeight: 800, fontSize: 18, color: "var(--green)" }}>{fmt$(total)}</div>
+                    <div className="tsm txt2">{fmt$(tar.base)} servicio{extTotal > 0 ? ` + ${fmt$(extTotal)} extras` : ""}</div>
+                  </div>
+                </div>
+                {(tar.extras||[]).length > 0 && (
+                  <div className="fcol gap2 mb4">
+                    {tar.extras.map((e,i) => <div key={i} className="tsm txt2">+ {e.desc}: {fmt$(e.amount)}</div>)}
+                  </div>
+                )}
+                <div className="flex aic jb">
+                  <div className="tsm txt2">Actualizado: {fmtDate(tar.lastUpdated)}</div>
+                  <div className="flex gap4">
+                    {tar.history?.length > 1 && (
+                      <details>
+                        <summary className="btn btn-g btn-sm" style={{ cursor: "pointer" }}>📈 Historial ({tar.history.length})</summary>
+                        <div className="fcol gap2 mt4">
+                          {[...tar.history].reverse().slice(0,5).map((h,i) => (
+                            <div key={i} className="tsm txt2">{fmtDate(h.date)}: {fmt$(h.base + (h.extras||[]).reduce((s,e)=>s+e.amount,0))}</div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    <button className="btn btn-g btn-sm" onClick={() => onDelete && onDelete(tar.id)}>🗑</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSaveSocios, onAddDistribution, onUpdDistribution }) {
   const [tab, setTab] = useState("resumen");
   const [periodo, setPeriodo] = useState(nowMon());
@@ -4080,7 +4286,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
   );
 }
 
-function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onLogout }) {
+function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -4090,6 +4296,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
     { id: "dashboard", l: "📊 Dashboard" },
     { id: "socios", l: "👥 Socios" },
     { id: "pendientes", l: `📋 Cierre${pendCount > 0 ? ` (${pendCount})` : ""}` },
+    { id: "tarifario", l: "📋 Tarifario" },
     { id: "forecast", l: "📅 Forecast" },
     { id: "gastos", l: "🔍 Análisis gastos" },
     { id: "viajes", l: "🚛 Viajes" },
@@ -4126,7 +4333,8 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
       <div style={{ paddingTop: 8 }}>
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
-        {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
+        {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
+        {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={id => onUpsertTarifa && saveTarifario && undefined} />}
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} />}
@@ -4161,6 +4369,7 @@ export default function App() {
   const [statusRequests, setStatusRequests] = useState([]);
   const [socios, setSocios] = useState([]);
   const [distributions, setDistributions] = useState([]);
+  const [tarifario, setTarifario] = useState([]);
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
@@ -4176,14 +4385,14 @@ export default function App() {
         ld("tr:razones",DEF_RS), ld("tr:clients",[]), ld("tr:providers",[]),
         ld("tr:instructions",[]), ld("tr:schedule",[]),
         ld("tr:instant",{vehicles:[],drivers:[]}), ld("tr:status_requests",[]),
-        ld("tr:socios",[]), ld("tr:distributions",[]),
-      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq,soc,dist]) => {
+        ld("tr:socios",[]), ld("tr:distributions",[]), ld("tr:tarifario",[]),
+      ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq,soc,dist,tar]) => {
         setTrips(t); setInspections(i); setVehicles(v); setDrivers(d);
         setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
         setInstructions(ins); setSchedule(sc);
         setInstant(inst||{vehicles:[],drivers:[]});
         setStatusRequests(sreq||[]);
-        setSocios(soc||[]); setDistributions(dist||[]);
+        setSocios(soc||[]); setDistributions(dist||[]); setTarifario(tar||[]);
         if (info.rol === "chofer") {
           // 1. Check saved email→driverId mapping in Firestore
           const emailMap = await ld("tr:email_driver_map", {});
@@ -4233,6 +4442,14 @@ export default function App() {
   const saveDistributions = d => { setDistributions(d); sv("tr:distributions", d); };
   const addDistribution = d => { const u = [...distributions, d]; setDistributions(u); sv("tr:distributions", u); };
   const updDistribution = (id, patch) => { const u = distributions.map(d => d.id === id ? { ...d, ...patch } : d); setDistributions(u); sv("tr:distributions", u); };
+  const saveTarifario = t => { setTarifario(t); sv("tr:tarifario", t); };
+  const upsertTarifa = (clientName, origin, destination, base, extras) => {
+    const key = `${clientName}||${origin}||${destination}`.toLowerCase();
+    const existing = tarifario.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
+    const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
+    const u = existing ? tarifario.map(t => t.id === entry.id ? entry : t) : [...tarifario, entry];
+    setTarifario(u); sv("tr:tarifario", u);
+  };
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -4277,13 +4494,14 @@ export default function App() {
     <AdminApp trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
-      socios={socios} distributions={distributions}
+      socios={socios} distributions={distributions} tarifario={tarifario}
       onAdd={addTrip} onUpdate={updTrip} onDelete={delTrip} onAddIns={addIns}
       onSaveExpenses={saveExps} onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut}
       onSaveVehicles={saveVehicles} onSaveDrivers={saveDrivers} onSaveRazones={saveRazones}
       onSaveClients={saveClients} onSaveProviders={saveProviders}
       onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
       onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
+      onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
   );
 }
