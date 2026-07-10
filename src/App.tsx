@@ -2222,21 +2222,29 @@ function BillingPanel({ trip, onUpdate }) {
 }
 
 function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd }) {
-  const [filt, setFilt] = useState({ month: nowMon(), driverId: "", vehicleId: "", rsId: "", status: "" });
+  const [filt, setFilt] = useState({ month: "", client: "", driverId: "", vehicleId: "", rsId: "", status: "", q: "" });
   const [editAmt, setEditAmt] = useState({});
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [delTripId, setDelTripId] = useState(null);
   const setF = k => e => setFilt(p => ({ ...p, [k]: e.target.value }));
+  const gd = id => drivers.find(d => d.id === id); const gv = id => vehicles.find(v => v.id === id);
+  const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const q = (filt.q || "").trim().toLowerCase();
   const filtered = trips.filter(t => {
-    if (filt.month && !t.date.startsWith(filt.month)) return false;
+    if (filt.month === "__past") { if (t.date.slice(0,7) >= nowMon()) return false; }
+    else if (filt.month && !t.date.startsWith(filt.month)) return false;
+    if (filt.client && t.client !== filt.client) return false;
     if (filt.driverId && t.driverId !== filt.driverId) return false;
     if (filt.vehicleId && t.vehicleId !== filt.vehicleId) return false;
     if (filt.rsId && t.razonSocialId !== filt.rsId) return false;
     if (filt.status && (t.billingStatus || "sin_facturar") !== filt.status) return false;
+    if (q) {
+      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates].map(x => (x || "").toLowerCase()).join(" ");
+      if (!hay.includes(q)) return false;
+    }
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date));
-  const gd = id => drivers.find(d => d.id === id); const gv = id => vehicles.find(v => v.id === id);
   const totalInc = filtered.reduce((s, t) => s + (t.amount || 0), 0);
   const [savedId, setSavedId] = useState(null);
   const saveAmt = id => { const v = parseFloat(editAmt[id] || 0); if (!isNaN(v)) { onUpdate(id, { amount: v }); setSavedId(id); setTimeout(() => setSavedId(null), 2000); } setEditAmt(p => { const n = { ...p }; delete n[id]; return n; }); };
@@ -2251,8 +2259,21 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
         </div>
       )}
       <div className="card mb12">
+        <div className="flex aic gap8 mb8">
+          <input type="text" placeholder="🔎 Buscar viaje: cliente, ruta, folio de factura, carta porte, chofer..." value={filt.q} onChange={setF("q")} style={{ flex: 1 }} />
+          {filt.q && <button className="btn btn-g btn-sm" onClick={() => setFilt(p => ({ ...p, q: "" }))}>✕</button>}
+        </div>
         <div className="flex gap8 wrap">
-          <div style={{ flex: 1, minWidth: 120 }}><Field label="Mes"><input type="month" value={filt.month} onChange={setF("month")} /></Field></div>
+          <div style={{ flex: 1, minWidth: 120 }}><Field label="Mes">
+            <select value={filt.month} onChange={setF("month")}>
+              <option value="">Todos los meses</option>
+              <option value="__past">Solo meses anteriores</option>
+              {[...new Set(trips.map(t => t.date.slice(0,7)))].sort().reverse().map(m => (
+                <option key={m} value={m}>{m === nowMon() ? m + " (actual)" : m}</option>
+              ))}
+            </select>
+          </Field></div>
+          <div style={{ flex: 1, minWidth: 120 }}><Field label="Cliente"><select value={filt.client} onChange={setF("client")}><option value="">Todos</option>{clientList.map(c => <option key={c} value={c}>{c}</option>)}</select></Field></div>
           <div style={{ flex: 1, minWidth: 120 }}><Field label="Conductor"><select value={filt.driverId} onChange={setF("driverId")}><option value="">Todos</option>{drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field></div>
           <div style={{ flex: 1, minWidth: 120 }}><Field label="Unidad"><select value={filt.vehicleId} onChange={setF("vehicleId")}><option value="">Todas</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.plates}</option>)}</select></Field></div>
           <div style={{ flex: 1, minWidth: 120 }}><Field label="R. Social"><select value={filt.rsId} onChange={setF("rsId")}><option value="">Todas</option>{razones.map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field></div>
@@ -3222,12 +3243,25 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
 }
 
 function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, tarifario, onUpsertTarifa }) {
-  const [mk, setMk] = useState(nowMon());
+  const [mk, setMk] = useState("__past");
   const [selRS, setSelRS] = useState("all");
+  const [selClient, setSelClient] = useState("");
+  const [q, setQ] = useState("");
   const [expandedId, setExpandedId] = useState(null);
-  const ft = trips.filter(t => t.date.startsWith(mk) && (selRS === "all" || t.razonSocialId === selRS));
-  const fo = outsourced.filter(o => o.date.startsWith(mk) && (selRS === "all" || o.razonSocialId === selRS));
+  const curMon = nowMon();
+  // mk can be a specific month, or "__past" (all previous months), or "__all"
+  const inScope = dateStr => {
+    if (mk === "__past") return dateStr.slice(0,7) < curMon;
+    if (mk === "__all") return true;
+    return dateStr.startsWith(mk);
+  };
+  const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const qq = (q || "").trim().toLowerCase();
+  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
+  const ft = trips.filter(t => inScope(t.date) && (selRS === "all" || t.razonSocialId === selRS) && (!selClient || t.client === selClient) && matchQ(t));
+  const fo = outsourced.filter(o => inScope(o.date) && (selRS === "all" || o.razonSocialId === selRS) && (!selClient || o.client === selClient) && (!qq || [o.provider, o.origin, o.destination, o.client, o.providerInvoiceNum].map(x => (x || "").toLowerCase()).join(" ").includes(qq)));
   const bs = t => t.billingStatus || "sin_facturar";
+  const isPast = mk === "__past" || (mk !== "__all" && mk < curMon);
 
   // Five billing buckets
   const sinMonto   = ft.filter(t => (!t.amount || t.amount <= 0) && bs(t) === "sin_facturar");
@@ -3305,15 +3339,45 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
             {razones.filter(r => r.active).map(r => <button key={r.id} className={`pill-tab ${selRS === r.id ? "act" : ""}`} onClick={() => setSelRS(r.id)}>{r.short}</button>)}
           </div>
           <select value={mk} onChange={e => setMk(e.target.value)} style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "var(--r)", color: "var(--txt)", padding: "6px 10px", fontFamily: "Barlow", outline: "none" }}>
-            {months.map(m => <option key={m} value={m}>{m}</option>)}
+            <option value="__past">⏮ Todos los meses anteriores</option>
+            <option value="__all">📋 Todos los periodos</option>
+            <option disabled>──────────</option>
+            {months.map(m => <option key={m} value={m}>{m === curMon ? `${m} (actual)` : m}</option>)}
           </select>
+        </div>
+      </div>
+
+      {/* Buscador y filtro por cliente */}
+      <div className="card mb12">
+        <div className="flex aic gap8 wrap">
+          <input type="text" placeholder="🔎 Buscar: cliente, ruta, folio de factura, carta porte..." value={q} onChange={e => setQ(e.target.value)} style={{ flex: 2, minWidth: 200 }} />
+          <select value={selClient} onChange={e => setSelClient(e.target.value)} style={{ flex: 1, minWidth: 150, background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "var(--r)", color: "var(--txt)", padding: "6px 10px", fontFamily: "Barlow", outline: "none" }}>
+            <option value="">Todos los clientes</option>
+            {clientList.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          {(q || selClient) && <button className="btn btn-g btn-sm" onClick={() => { setQ(""); setSelClient(""); }}>✕ Limpiar</button>}
+        </div>
+      </div>
+
+      {/* Period banner */}
+      <div className="card mb12" style={{ background: isPast ? "#f59e0b0a" : mk === "__all" ? "var(--bg3)" : "#22c55e0a", borderLeft: `4px solid ${isPast ? "var(--amber)" : mk === "__all" ? "var(--txt2)" : "var(--green)"}` }}>
+        <div className="flex aic gap8">
+          <span style={{ fontSize: 20 }}>{isPast ? "⏮" : mk === "__all" ? "📋" : "📅"}</span>
+          <div>
+            <div style={{ fontWeight: 700 }}>
+              {mk === "__past" ? "Trabajando meses anteriores (cierre desfasado)" : mk === "__all" ? "Viendo todos los periodos" : mk === curMon ? `Mes actual — ${mk}` : `Periodo cerrado — ${mk}`}
+            </div>
+            <div className="tsm txt2">
+              {mk === "__past" ? "Todos los servicios de meses previos al actual. Trabaja aquí tu cierre pendiente." : mk === "__all" ? "Todos los servicios sin importar el mes." : `${total} servicios en este periodo.`}
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Progress */}
       <div className="card mb12">
         <div className="flex aic jb mb8">
-          <span style={{ fontWeight: 700 }}>Progreso del mes</span>
+          <span style={{ fontWeight: 700 }}>{mk === "__past" ? "Progreso de meses anteriores" : mk === "__all" ? "Progreso global" : "Progreso del mes"}</span>
           <span className="tsm txt2">{completos.length}/{total} servicios completos</span>
         </div>
         <div className="prog mb12"><div className="progf" style={{ width: `${pct}%`, background: pct === 100 ? "var(--green)" : "var(--amber)" }} /></div>
@@ -4417,15 +4481,19 @@ export default function App() {
   }, []);
 
   const upd = (arr, id, p) => arr.map(x => x.id === id ? { ...x, ...p } : x);
-  const addTrip = t => { const u = [...trips, t]; setTrips(u); sv("tr:trips", u); };
-  const updTrip = (id, p) => { const u = upd(trips, id, p); setTrips(u); sv("tr:trips", u); };
-  const delTrip = id => { const u = trips.filter(t => t.id !== id); setTrips(u); sv("tr:trips", u); };
-  const addIns = i => { const u = [...inspections, i]; setInspections(u); sv("tr:inspections", u); };
-  const delIns = id => { const u = inspections.filter(i => i.id !== id); setInspections(u); sv("tr:inspections", u); };
-  const resolveInspection = id => { const u = upd(inspections, id, { resolved: true, resolvedAt: today() }); setInspections(u); sv("tr:inspections", u); };
-  const addOut = o => { const u = [...outsourced, o]; setOutsourced(u); sv("tr:outsourced", u); };
-  const updOut = (id, p) => { const u = upd(outsourced, id, p); setOutsourced(u); sv("tr:outsourced", u); };
-  const delOut = id => { const u = outsourced.filter(o => o.id !== id); setOutsourced(u); sv("tr:outsourced", u); };
+  // Guardado seguro: cada escritura se calcula desde la copia MAS FRESCA del estado
+  // (setX(prev => ...)), no de una foto vieja del closure. Elimina la condicion de
+  // carrera que perdia montos al capturar varios seguidos. La escritura es INMEDIATA
+  // (sin timer), asi el ultimo monto se persiste aunque recargues al instante.
+  const addTrip = t => setTrips(prev => { const u = [...prev, t]; sv("tr:trips", u); return u; });
+  const updTrip = (id, p) => setTrips(prev => { const u = upd(prev, id, p); sv("tr:trips", u); return u; });
+  const delTrip = id => setTrips(prev => { const u = prev.filter(t => t.id !== id); sv("tr:trips", u); return u; });
+  const addIns = i => setInspections(prev => { const u = [...prev, i]; sv("tr:inspections", u); return u; });
+  const delIns = id => setInspections(prev => { const u = prev.filter(i => i.id !== id); sv("tr:inspections", u); return u; });
+  const resolveInspection = id => setInspections(prev => { const u = upd(prev, id, { resolved: true, resolvedAt: today() }); sv("tr:inspections", u); return u; });
+  const addOut = o => setOutsourced(prev => { const u = [...prev, o]; sv("tr:outsourced", u); return u; });
+  const updOut = (id, p) => setOutsourced(prev => { const u = upd(prev, id, p); sv("tr:outsourced", u); return u; });
+  const delOut = id => setOutsourced(prev => { const u = prev.filter(o => o.id !== id); sv("tr:outsourced", u); return u; });
   const saveExps = e => { setExpenses(e); sv("tr:expenses", e); };
   const saveVehicles = v => { setVehicles(v); sv("tr:vehicles", v); };
   const saveDrivers = d => { setDrivers(d); sv("tr:drivers", d); };
@@ -4434,22 +4502,22 @@ export default function App() {
   const saveProviders = p => { setProviders(p); sv("tr:providers", p); };
   const saveInstructions = i => { setInstructions(i); sv("tr:instructions", i); };
   const saveSchedule = s => { setSchedule(s); sv("tr:schedule", s); };
-  const ackInstruction = id => { const u = upd(instructions, id, { ack: true }); setInstructions(u); sv("tr:instructions", u); };
+  const ackInstruction = id => setInstructions(prev => { const u = upd(prev, id, { ack: true }); sv("tr:instructions", u); return u; });
   const updateInstant = u => { setInstant(u); sv("tr:instant", u); };
-  const addStatusRequest = req => { const u = [...statusRequests, req]; setStatusRequests(u); sv("tr:status_requests", u); };
-  const updStatusRequest = (id, patch) => { const u = statusRequests.map(r => r.id === id ? { ...r, ...patch } : r); setStatusRequests(u); sv("tr:status_requests", u); };
+  const addStatusRequest = req => setStatusRequests(prev => { const u = [...prev, req]; sv("tr:status_requests", u); return u; });
+  const updStatusRequest = (id, patch) => setStatusRequests(prev => { const u = prev.map(r => r.id === id ? { ...r, ...patch } : r); sv("tr:status_requests", u); return u; });
   const saveSocios = s => { setSocios(s); sv("tr:socios", s); };
   const saveDistributions = d => { setDistributions(d); sv("tr:distributions", d); };
-  const addDistribution = d => { const u = [...distributions, d]; setDistributions(u); sv("tr:distributions", u); };
-  const updDistribution = (id, patch) => { const u = distributions.map(d => d.id === id ? { ...d, ...patch } : d); setDistributions(u); sv("tr:distributions", u); };
+  const addDistribution = d => setDistributions(prev => { const u = [...prev, d]; sv("tr:distributions", u); return u; });
+  const updDistribution = (id, patch) => setDistributions(prev => { const u = prev.map(d => d.id === id ? { ...d, ...patch } : d); sv("tr:distributions", u); return u; });
   const saveTarifario = t => { setTarifario(t); sv("tr:tarifario", t); };
-  const upsertTarifa = (clientName, origin, destination, base, extras) => {
+  const upsertTarifa = (clientName, origin, destination, base, extras) => setTarifario(prev => {
     const key = `${clientName}||${origin}||${destination}`.toLowerCase();
-    const existing = tarifario.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
+    const existing = prev.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
     const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
-    const u = existing ? tarifario.map(t => t.id === entry.id ? entry : t) : [...tarifario, entry];
-    setTarifario(u); sv("tr:tarifario", u);
-  };
+    const u = existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
+    sv("tr:tarifario", u); return u;
+  });
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
