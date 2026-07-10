@@ -2338,7 +2338,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
     if (filt.rsId && t.razonSocialId !== filt.rsId) return false;
     if (filt.status && (t.billingStatus || "sin_facturar") !== filt.status) return false;
     if (q) {
-      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
+      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), t.amount ? ivaTotal(t.amount, t.sinFactura, t.ivaRetention).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -3340,7 +3340,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
   };
   const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const qq = (q || "").trim().toLowerCase();
-  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, String(t.amount || ""), (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
+  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, String(t.amount || ""), t.amount ? ivaTotal(t.amount, t.sinFactura, t.ivaRetention).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
   const ft = trips.filter(t => inScope(t.date) && (selRS === "all" || t.razonSocialId === selRS) && (!selClient || t.client === selClient) && matchQ(t));
   const fo = outsourced.filter(o => inScope(o.date) && (selRS === "all" || o.razonSocialId === selRS) && (!selClient || o.client === selClient) && (!qq || [o.provider, o.origin, o.destination, o.client, o.providerInvoiceNum].map(x => (x || "").toLowerCase()).join(" ").includes(qq)));
   const bs = t => t.billingStatus || "sin_facturar";
