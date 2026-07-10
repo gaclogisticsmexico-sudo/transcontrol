@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
@@ -4520,10 +4520,40 @@ export default function App() {
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
+    let dataUnsubs = [];
+    const cleanupData = () => { dataUnsubs.forEach(u => { try { u && u(); } catch {} }); dataUnsubs = []; };
     const unsub = onAuthStateChanged(auth, async (user) => {
+      cleanupData();
       if (!user) { setLoading(false); setRole(null); setDriver(null); return; }
       const info = USUARIOS[user.email?.toLowerCase()];
       if (!info) { await signOut(auth); setLoading(false); return; }
+      // Sincronizacion en tiempo real: cada coleccion escucha su doc en Firestore, asi las pestanas/
+      // dispositivos se mantienen al dia y dejan de sobrescribirse entre si (una pestana con datos
+      // viejos ya no pisa lo que guardo otra). Es ADITIVO: si fallara, la carga inicial de abajo
+      // (Promise.all) sigue funcionando igual que antes; el login no depende de esto.
+      try {
+        const listen = (k, setter, def) => onSnapshot(doc(db, "tc", sk(k)),
+          s => setter(s.exists() ? s.data().v : def),
+          err => console.error("onSnapshot", k, err.message));
+        dataUnsubs = [
+          listen("tr:trips", setTrips, []),
+          listen("tr:inspections", setInspections, []),
+          listen("tr:vehicles", setVehicles, DEF_VEHICLES),
+          listen("tr:drivers", setDrivers, DEF_DRIVERS),
+          listen("tr:expenses", setExpenses, []),
+          listen("tr:outsourced", setOutsourced, []),
+          listen("tr:razones", setRazones, DEF_RS),
+          listen("tr:clients", v => setClients(v || []), []),
+          listen("tr:providers", v => setProviders(v || []), []),
+          listen("tr:instructions", setInstructions, []),
+          listen("tr:schedule", setSchedule, []),
+          listen("tr:instant", v => setInstant(v || { vehicles: [], drivers: [] }), { vehicles: [], drivers: [] }),
+          listen("tr:status_requests", v => setStatusRequests(v || []), []),
+          listen("tr:socios", v => setSocios(v || []), []),
+          listen("tr:distributions", v => setDistributions(v || []), []),
+          listen("tr:tarifario", v => setTarifario(v || []), []),
+        ];
+      } catch (e) { console.error("listeners", e.message); }
       const safety = setTimeout(() => setLoading(false), 8000);
       Promise.all([
         ld("tr:trips",[]), ld("tr:inspections",[]),
@@ -4560,7 +4590,7 @@ export default function App() {
         }
       }).catch(()=>{}).finally(()=>{ clearTimeout(safety); setLoading(false); });
     });
-    return () => unsub();
+    return () => { cleanupData(); unsub(); };
   }, []);
 
   const upd = (arr, id, p) => arr.map(x => x.id === id ? { ...x, ...p } : x);
