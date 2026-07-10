@@ -13,6 +13,7 @@ const CARGO = [
 ];
 const BILLING = [
   { v: "sin_facturar", l: "Sin facturar", c: "bgr" },
+  { v: "sin_factura", l: "Pendiente de pago (efectivo)", c: "bc" },
   { v: "facturado", l: "Facturado", c: "ba" },
   { v: "pagado", l: "Pagado", c: "bg" },
   { v: "complemento", l: "Complemento emitido", c: "bb" },
@@ -236,7 +237,7 @@ function BillingBadge({ v, mp }) {
   if (v === "facturado" && mp === "PPD") return <span className="badge ba">📋 PPD — Pdte. complemento</span>;
   if (v === "facturado" && mp === "PUE") return <span className="badge ba">💳 PUE — Pdte. pago</span>;
   if (v === "facturado") return <span className="badge ba">Facturado</span>;
-  if (v === "sin_factura") return <span className="badge bgr">Sin factura</span>;
+  if (v === "sin_factura") return <span className="badge bc">💵 Pendiente de pago</span>;
   return <span className="badge bgr">Sin facturar</span>;
 }
 function RSBadge({ id, razones }) { const rs = razones?.find(r => r.id === id); return rs ? <span className="rs-pill">🏢 {rs.short}</span> : null; }
@@ -2096,7 +2097,13 @@ function BillingPanel({ trip, onUpdate }) {
 
       {/* Forma de pago operativa */}
       <Field label="Forma de pago" style={{ marginBottom: 12 }}>
-        <select value={trip.paymentMethod || ""} onChange={e => save({ paymentMethod: e.target.value })}>
+        <select value={trip.paymentMethod || ""} onChange={e => {
+          const pm = e.target.value;
+          const patch = { paymentMethod: pm };
+          // Efectivo => no se factura (pendiente de pago); otra forma => por facturar. Solo si aún no está facturado/pagado.
+          if (bs === "sin_facturar" || bs === "sin_factura") patch.billingStatus = pm === "efectivo" ? "sin_factura" : "sin_facturar";
+          save(patch);
+        }}>
           <option value="">Sin definir</option>
           <option value="efectivo">💵 Efectivo</option>
           <option value="transferencia">🏦 Transferencia</option>
