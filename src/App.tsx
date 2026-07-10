@@ -252,10 +252,13 @@ function PhotoBtn({ label, photoKey, compact = false, onLoad }) {
   useEffect(() => {
     (async () => { const r = await ldPh(photoKey[0], photoKey[1]); if (r) { setPh(r); if (onLoad) onLoad(r); } })();
   }, []);
-  const upload = async e => {
-    const f = e.target.files[0]; if (!f) return;
+  const [drag, setDrag] = useState(false);
+  const doUpload = async f => {
+    if (!f) return;
     try { const b64 = await readB64(f); await svPh(photoKey[0], photoKey[1], b64); setPh(b64); if (onLoad) onLoad(b64); } catch {}
   };
+  const upload = e => doUpload(e.target.files[0]);
+  const onDrop = e => { e.preventDefault(); setDrag(false); doUpload(e.dataTransfer.files[0]); };
   return (
     <div>
       <input type="file" accept="image/*,application/pdf" ref={ref} style={{ display: "none" }} onChange={upload} />
@@ -265,8 +268,12 @@ function PhotoBtn({ label, photoKey, compact = false, onLoad }) {
             : <div className="card" style={{ padding: 24, textAlign: "center" }} onClick={e => e.stopPropagation()}><div style={{ fontSize: 48, marginBottom: 12 }}>📄</div><div style={{ marginBottom: 16 }}>Archivo PDF cargado</div><a href={ph} download="doc.pdf" className="btn btn-a">Descargar</a></div>}
         </div>
       )}
-      <div className="flex gap4 wrap">
-        <button className={`btn btn-g ${compact ? "btn-sm" : ""}`} onClick={() => ref.current.click()}><Ico path={IC.img} size={14} /> {ph ? "Cambiar" : `📎 ${label}`}</button>
+      <div className="flex gap4 wrap"
+        onDragOver={e => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={onDrop}
+        style={drag ? { outline: "2px dashed var(--blue)", outlineOffset: 2, borderRadius: 6 } : undefined}>
+        <button className={`btn btn-g ${compact ? "btn-sm" : ""}`} onClick={() => ref.current.click()} title="Clic para elegir, o arrastra el archivo aquí"><Ico path={IC.img} size={14} /> {ph ? "Cambiar" : `📎 ${label}`}</button>
         {ph && <button className={`btn btn-b ${compact ? "btn-sm" : ""}`} onClick={() => setShow(true)}><Ico path={IC.eye} size={14} /> Ver</button>}
       </div>
     </div>
@@ -2137,7 +2144,10 @@ function BillingPanel({ trip, onUpdate }) {
             </div>
           )}
 
-          <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura" })}>💵 Sin factura / Efectivo</button>
+          <div className="flex gap4 wrap">
+            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura" })}>💵 Sin factura / Efectivo</button>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), paymentMethod: "efectivo", sinFactura: true })}>✓ Pagado en efectivo</button>
+          </div>
         </div>
       )}
 
@@ -2221,7 +2231,88 @@ function BillingPanel({ trip, onUpdate }) {
   );
 }
 
-function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd }) {
+// Editor de monto con servicio base + extras (patio regulador, demoras, maniobras...) para la pestaña Viajes.
+// Mismo modelo de datos que QuickAmountRow del Cierre (amountBase/amountExtras). Si se cambia uno, sincronizar el otro.
+function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
+  const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
+  const suggestion = tarifario?.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key);
+  const [base, setBase] = useState(t.amountBase || t.amount || "");
+  const [extras, setExtras] = useState(t.amountExtras || []);
+  const [newDesc, setNewDesc] = useState("");
+  const [newAmt, setNewAmt] = useState("");
+  const [sinFact, setSinFact] = useState(!!t.sinFactura);
+  const [ret, setRet] = useState(!!t.ivaRetention);
+  const [saveTar, setSaveTar] = useState(true);
+  const baseNum = parseFloat(base) || 0;
+  const extrasTotal = extras.reduce((s, e) => s + (e.amount || 0), 0);
+  const total = baseNum + extrasTotal;
+  const addExtra = () => {
+    const a = parseFloat(newAmt);
+    if (!newDesc || isNaN(a) || a <= 0) return;
+    setExtras(p => [...p, { id: genId(), desc: newDesc, amount: a }]);
+    setNewDesc(""); setNewAmt("");
+  };
+  const save = () => {
+    if (total <= 0) return;
+    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+    if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
+      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
+    onDone && onDone();
+  };
+  return (
+    <div className="fcol gap4" style={{ flex: 1 }}>
+      {suggestion && (
+        <div className="tsm" style={{ color: "var(--green)" }}>
+          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras || []).reduce((s, e) => s + e.amount, 0))}
+          <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras || []); }}>Usar</button>
+        </div>
+      )}
+      <Field label="Servicio base ($) *">
+        <input type="number" placeholder="0.00" value={base} onChange={e => setBase(e.target.value)} autoFocus />
+      </Field>
+      {extras.length > 0 && (
+        <div className="fcol gap4 mb4">
+          {extras.map(e => (
+            <div key={e.id} className="flex aic gap4">
+              <span className="tsm" style={{ flex: 1 }}>{e.desc}</span>
+              <span className="tsm txt2">{fmt$(e.amount)}</span>
+              <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} onClick={() => setExtras(p => p.filter(x => x.id !== e.id))}>🗑</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap4 mb4">
+        <input placeholder="Extra: patio regulador, demora, maniobra..." value={newDesc} onChange={e => setNewDesc(e.target.value)} style={{ flex: 2 }} />
+        <input type="number" placeholder="$0" value={newAmt} onChange={e => setNewAmt(e.target.value)} style={{ flex: 1, minWidth: 0 }} onKeyDown={e => e.key === "Enter" && addExtra()} />
+        <button className="btn btn-g btn-sm" onClick={addExtra}><Ico path={IC.plus} size={14} /></button>
+      </div>
+      {total > 0 && (
+        <div className="flex aic jb mb4 p8" style={{ background: "var(--bg)", borderRadius: 6 }}>
+          <span className="tsm txt2">Total subtotal:</span>
+          <span style={{ fontWeight: 800 }}>{fmt$(total)}
+            {extras.length > 0 && <span className="tsm txt2"> ({fmt$(baseNum)} servicio + {fmt$(extrasTotal)} extras)</span>}
+          </span>
+        </div>
+      )}
+      <IVAToggles sinFactura={sinFact} retention={ret}
+        onToggleSF={() => { setSinFact(p => !p); setRet(false); }}
+        onToggleRet={() => setRet(p => !p)} />
+      <IVACalc base={total} sinFactura={sinFact} retention={ret} />
+      {t.client && t.origin && t.destination && (
+        <div className="flex aic gap8">
+          <ChkBox checked={saveTar} onChange={() => setSaveTar(p => !p)} />
+          <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination})</span>
+        </div>
+      )}
+      <div className="flex gap4">
+        <button className="btn btn-gr btn-sm" onClick={save} disabled={total <= 0} style={{ flex: 1, justifyContent: "center" }}>✓ Guardar monto</button>
+        <button className="btn btn-g btn-sm" onClick={onDone}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd, tarifario, onUpsertTarifa }) {
   const [filt, setFilt] = useState({ month: "", client: "", driverId: "", vehicleId: "", rsId: "", status: "", q: "" });
   const [editAmt, setEditAmt] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -2240,14 +2331,12 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
     if (filt.rsId && t.razonSocialId !== filt.rsId) return false;
     if (filt.status && (t.billingStatus || "sin_facturar") !== filt.status) return false;
     if (q) {
-      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates].map(x => (x || "").toLowerCase()).join(" ");
+      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
       if (!hay.includes(q)) return false;
     }
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date));
   const totalInc = filtered.reduce((s, t) => s + (t.amount || 0), 0);
-  const [savedId, setSavedId] = useState(null);
-  const saveAmt = id => { const v = parseFloat(editAmt[id] || 0); if (!isNaN(v)) { onUpdate(id, { amount: v }); setSavedId(id); setTimeout(() => setSavedId(null), 2000); } setEditAmt(p => { const n = { ...p }; delete n[id]; return n; }); };
   return (
     <div className="ap">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>Registro de Viajes</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Nuevo</button></div>
@@ -2260,7 +2349,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
       )}
       <div className="card mb12">
         <div className="flex aic gap8 mb8">
-          <input type="text" placeholder="🔎 Buscar viaje: cliente, ruta, folio de factura, carta porte, chofer..." value={filt.q} onChange={setF("q")} style={{ flex: 1 }} />
+          <input type="text" placeholder="🔎 Buscar viaje: cliente, ruta, monto, folio de factura, carta porte, chofer..." value={filt.q} onChange={setF("q")} style={{ flex: 1 }} />
           {filt.q && <button className="btn btn-g btn-sm" onClick={() => setFilt(p => ({ ...p, q: "" }))}>✕</button>}
         </div>
         <div className="flex gap8 wrap">
@@ -2347,21 +2436,8 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                 </div>
                 <div className="flex aic gap8 wrap">
                   {editing ? (
-                    <div className="fcol gap4" style={{ flex: 1 }}>
-                      <div className="flex gap4 aic">
-                        <input className="inp-in" type="number" placeholder="Subtotal sin IVA" value={editAmt[t.id]} onChange={e => setEditAmt(p => ({ ...p, [t.id]: e.target.value }))} onKeyDown={e => e.key === "Enter" && saveAmt(t.id)} autoFocus style={{ flex: 1 }} />
-                        <button className={`btn btn-sm ${savedId === t.id ? "btn-gr" : "btn-gr"}`}
-                        onClick={() => saveAmt(t.id)}
-                        style={{ minWidth: savedId === t.id ? 80 : 32, justifyContent: "center", background: savedId === t.id ? "var(--green)" : "" }}>
-                        {savedId === t.id ? "✓ Guardado" : "✓"}
-                      </button>
-                        <button className="btn btn-g btn-sm" onClick={() => setEditAmt(p => { const n={...p}; delete n[t.id]; return n; })}>✕</button>
-                      </div>
-                      <IVAToggles sinFactura={t.sinFactura} retention={t.ivaRetention}
-                        onToggleSF={() => onUpdate(t.id, { sinFactura: !t.sinFactura, ivaRetention: false })}
-                        onToggleRet={() => onUpdate(t.id, { ivaRetention: !t.ivaRetention })} />
-                      <IVACalc base={parseFloat(editAmt[t.id]||0)} sinFactura={t.sinFactura} retention={t.ivaRetention} />
-                    </div>
+                    <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa}
+                      onDone={() => setEditAmt(p => { const n = { ...p }; delete n[t.id]; return n; })} />
                   ) : (
                     <div className="fcol gap2" style={{ flex: 1 }}>
                       <span style={{ cursor: "pointer", color: t.amount ? "var(--green)" : "var(--txt2)", fontWeight: t.amount ? 700 : 400 }}
@@ -3257,7 +3333,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
   };
   const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const qq = (q || "").trim().toLowerCase();
-  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
+  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, String(t.amount || ""), (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
   const ft = trips.filter(t => inScope(t.date) && (selRS === "all" || t.razonSocialId === selRS) && (!selClient || t.client === selClient) && matchQ(t));
   const fo = outsourced.filter(o => inScope(o.date) && (selRS === "all" || o.razonSocialId === selRS) && (!selClient || o.client === selClient) && (!qq || [o.provider, o.origin, o.destination, o.client, o.providerInvoiceNum].map(x => (x || "").toLowerCase()).join(" ").includes(qq)));
   const bs = t => t.billingStatus || "sin_facturar";
@@ -3350,7 +3426,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
       {/* Buscador y filtro por cliente */}
       <div className="card mb12">
         <div className="flex aic gap8 wrap">
-          <input type="text" placeholder="🔎 Buscar: cliente, ruta, folio de factura, carta porte..." value={q} onChange={e => setQ(e.target.value)} style={{ flex: 2, minWidth: 200 }} />
+          <input type="text" placeholder="🔎 Buscar: cliente, ruta, monto, folio de factura, carta porte..." value={q} onChange={e => setQ(e.target.value)} style={{ flex: 2, minWidth: 200 }} />
           <select value={selClient} onChange={e => setSelClient(e.target.value)} style={{ flex: 1, minWidth: 150, background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "var(--r)", color: "var(--txt)", padding: "6px 10px", fontFamily: "Barlow", outline: "none" }}>
             <option value="">Todos los clientes</option>
             {clientList.map(c => <option key={c} value={c}>{c}</option>)}
@@ -4401,7 +4477,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
         {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={id => onUpsertTarifa && saveTarifario && undefined} />}
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
-        {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} />}
+        {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
         {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
