@@ -2560,7 +2560,7 @@ function AdminClientes({ trips, razones }) {
   );
 }
 
-function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDelete }) {
+function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onUpdate, onDelete }) {
   const [filt, setFilt] = useState({ rsId: "", provPaid: "", clientBs: "", month: nowMon() });
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -2586,7 +2586,7 @@ function AdminTercerizados({ outsourced, razones, clients, onAdd, onUpdate, onDe
       {showForm && (
         <div className="card mb12">
           <div className="flex aic jb mb12"><span style={{ fontWeight: 700 }}>Registrar Tercerizado</span><button className="btn btn-g btn-sm" onClick={() => setShowForm(false)}>✕</button></div>
-          <OutsourcedForm razones={razones} clients={clients} onSave={o => { onAdd(o); setShowForm(false); }} onCancel={() => setShowForm(false)} />
+          <OutsourcedForm razones={razones} clients={clients} providers={providers} onSave={o => { onAdd(o); setShowForm(false); }} onCancel={() => setShowForm(false)} />
         </div>
       )}
       {(overdue.length > 0 || soon.length > 0) && (
