@@ -4433,6 +4433,149 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
   );
 }
 
+// ═══ PANEL — vista ejecutiva para toma de decisiones (la visión: la app como
+// tablero visual y la operación diaria por el bot) ═══
+function AdminPanel({ trips, outsourced, expenses }) {
+  const [mk, setMk] = useState(nowMon());
+  const months = [...new Set([...trips.map(t => (t.date || "").slice(0, 7)), ...outsourced.map(o => (o.date || "").slice(0, 7))].filter(Boolean))].sort().reverse();
+
+  const mt = trips.filter(t => (t.date || "").startsWith(mk));
+  const mo = outsourced.filter(o => (o.date || "").startsWith(mk));
+  const ingMes = mt.reduce((s, t) => s + (t.amount || 0), 0) + mo.reduce((s, o) => s + (o.clientAmount || 0), 0);
+  const costMes = mt.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (x.amount || 0), 0), 0)
+    + mo.reduce((s, o) => s + (o.providerAmount || 0), 0)
+    + expenses.filter(e => e.month === mk).reduce((s, e) => s + (e.amount || 0), 0);
+  const utilMes = ingMes - costMes;
+
+  // Cuentas por cobrar (global, total a depositar c/IVA) por antigüedad
+  const porCobrar = trips.filter(t => (t.amount || 0) > 0 && ["facturado", "sin_factura"].includes(t.billingStatus));
+  const cxcTotal = porCobrar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+  const buckets = [
+    { l: "0-15 días", min: 0, max: 15, c: "var(--green)" },
+    { l: "16-30 días", min: 16, max: 30, c: "var(--amber)" },
+    { l: "31-60 días", min: 31, max: 60, c: "#f97316" },
+    { l: "+60 días", min: 61, max: 99999, c: "var(--red)" },
+  ].map(b => {
+    const its = porCobrar.filter(t => { const d = daysSince(t.date); return d !== null && d >= b.min && d <= b.max; });
+    return { ...b, n: its.length, tot: its.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0) };
+  });
+  const maxB = Math.max(...buckets.map(b => b.tot), 1);
+
+  // Serie de 6 meses (ingresos vs costos, subtotales)
+  const hist = [];
+  { let [y, m] = mk.split("-").map(Number); for (let i = 0; i < 6; i++) { hist.unshift(`${y}-${String(m).padStart(2, "0")}`); m--; if (m === 0) { m = 12; y--; } } }
+  const serie = hist.map(k => {
+    const t6 = trips.filter(t => (t.date || "").startsWith(k));
+    const o6 = outsourced.filter(o => (o.date || "").startsWith(k));
+    return {
+      mes: k.slice(2),
+      Ingresos: Math.round(t6.reduce((s, t) => s + (t.amount || 0), 0) + o6.reduce((s, o) => s + (o.clientAmount || 0), 0)),
+      Costos: Math.round(t6.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (x.amount || 0), 0), 0)
+        + o6.reduce((s, o) => s + (o.providerAmount || 0), 0)
+        + expenses.filter(e => e.month === k).reduce((s, e) => s + (e.amount || 0), 0)),
+    };
+  });
+
+  const topCli = [...new Set([...mt.map(t => t.client), ...mo.map(o => o.client)].filter(Boolean))]
+    .map(c => ({ c, tot: mt.filter(t => t.client === c).reduce((s, t) => s + (t.amount || 0), 0) + mo.filter(o => o.client === c).reduce((s, o) => s + (o.clientAmount || 0), 0) }))
+    .sort((a, b) => b.tot - a.tot).slice(0, 6);
+  const maxCli = Math.max(...topCli.map(x => x.tot), 1);
+
+  // Pendientes operativos (foco del día)
+  const sinMonto = trips.filter(t => !(t.amount > 0)).length;
+  const porFacturar = trips.filter(t => (t.amount || 0) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar");
+  const ppdSinComp = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado").length;
+  const tercSinPagar = outsourced.filter(o => !o.paid && (o.providerAmount || 0) > 0);
+  const margenTerc = mo.reduce((s, o) => s + (o.clientAmount || 0) - (o.providerAmount || 0), 0);
+
+  const Barra = ({ pct, color }) => (
+    <div style={{ background: "var(--bg3)", borderRadius: 4, height: 10, flex: 1 }}>
+      <div style={{ width: `${Math.max(2, Math.min(100, pct))}%`, background: color, height: 10, borderRadius: 4 }} />
+    </div>
+  );
+
+  return (
+    <div className="ap">
+      <div className="flex aic jb mb12 wrap gap8">
+        <div className="stitle" style={{ margin: 0 }}>📈 Panel</div>
+        <select value={mk} onChange={e => setMk(e.target.value)} style={{ maxWidth: 160 }}>
+          {months.map(m => <option key={m} value={m}>{m === nowMon() ? m + " (actual)" : m}</option>)}
+        </select>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div className="card kpi"><div className="kv" style={{ color: "var(--green)" }}>{fmt$(ingMes)}</div><div className="kl">Ingresos {mk}</div></div>
+        <div className="card kpi"><div className="kv" style={{ color: "var(--red)" }}>{fmt$(costMes)}</div><div className="kl">Costos + gastos</div></div>
+        <div className="card kpi"><div className="kv" style={{ color: utilMes >= 0 ? "var(--cyan)" : "var(--red)" }}>{fmt$(utilMes)}</div><div className="kl">Utilidad bruta</div></div>
+        <div className="card kpi"><div className="kv" style={{ color: "var(--amber)" }}>{fmt$(cxcTotal)}</div><div className="kl">Por cobrar (c/IVA)</div></div>
+      </div>
+
+      <div className="card mb12">
+        <div className="stitle" style={{ fontSize: 15 }}>⚡ Pendientes de hoy</div>
+        <div className="flex gap8 wrap">
+          <span className="badge bgr">Sin monto: {sinMonto}</span>
+          <span className="badge ba">Por facturar: {porFacturar.length} ({fmt$(porFacturar.reduce((s, t) => s + (t.amount || 0), 0))})</span>
+          <span className="badge bb">PPD sin complemento: {ppdSinComp}</span>
+          <span className="badge br">Debemos a proveedores: {fmt$(tercSinPagar.reduce((s, o) => s + (o.providerAmount || 0), 0))} ({tercSinPagar.length})</span>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 12 }}>
+        <div className="card">
+          <div className="stitle" style={{ fontSize: 15 }}>📊 Ingresos vs costos (6 meses)</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={serie}>
+              <XAxis dataKey="mes" stroke="var(--txt2)" fontSize={11} />
+              <YAxis stroke="var(--txt2)" fontSize={10} tickFormatter={v => "$" + (v / 1000).toFixed(0) + "k"} />
+              <Tooltip formatter={v => fmt$(v)} contentStyle={{ background: "var(--bg2)", border: "1px solid var(--border)" }} />
+              <Legend />
+              <Bar dataKey="Ingresos" fill="#22c55e" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Costos" fill="#ef4444" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <div className="stitle" style={{ fontSize: 15 }}>⏳ Por cobrar por antigüedad</div>
+          <div className="fcol gap8">
+            {buckets.map(b => (
+              <div key={b.l} className="flex aic gap8">
+                <span className="tsm txt2" style={{ width: 74 }}>{b.l}</span>
+                <Barra pct={b.tot / maxB * 100} color={b.c} />
+                <span className="tsm" style={{ width: 110, textAlign: "right", color: b.c, fontWeight: 700 }}>{fmt$(b.tot)} <span className="txt2">({b.n})</span></span>
+              </div>
+            ))}
+          </div>
+          <div className="tsm txt2 mt8">Montos a depositar (con IVA). Los de +30 días son foco de cobranza.</div>
+        </div>
+
+        <div className="card">
+          <div className="stitle" style={{ fontSize: 15 }}>🏆 Top clientes de {mk}</div>
+          <div className="fcol gap8">
+            {topCli.length === 0 ? <div className="tsm txt2">Sin ingresos este mes</div> : topCli.map(x => (
+              <div key={x.c} className="flex aic gap8">
+                <span className="tsm" style={{ width: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.c}</span>
+                <Barra pct={x.tot / maxCli * 100} color="var(--blue)" />
+                <span className="tsm" style={{ width: 90, textAlign: "right", fontWeight: 700 }}>{fmt$(x.tot)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="stitle" style={{ fontSize: 15 }}>🔗 Tercerizados de {mk}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--green)" }}>{fmt$(mo.reduce((s, o) => s + (o.clientAmount || 0), 0))}</div><div className="kl">Ingreso</div></div>
+            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--red)" }}>{fmt$(mo.reduce((s, o) => s + (o.providerAmount || 0), 0))}</div><div className="kl">Costo</div></div>
+            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: margenTerc >= 0 ? "var(--cyan)" : "var(--red)" }}>{fmt$(margenTerc)}</div><div className="kl">Margen</div></div>
+          </div>
+          <div className="tsm txt2 mt8">{mo.length} servicio(s) tercerizado(s) en el mes</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -4440,6 +4583,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
   const pendCount = trips.filter(t => t.date.startsWith(mk) && ["sin_facturar","facturado","pagado"].includes(t.billingStatus || "sin_facturar") && t.amount > 0).length
     + outsourced.filter(o => o.date.startsWith(mk) && !o.paid).length;
   const tabs = [
+    { id: "panel", l: "📈 Panel" },
     { id: "dashboard", l: "📊 Dashboard" },
     { id: "socios", l: "👥 Socios" },
     { id: "pendientes", l: `📋 Cierre${pendCount > 0 ? ` (${pendCount})` : ""}` },
@@ -4478,6 +4622,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
       </div>
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
+        {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
