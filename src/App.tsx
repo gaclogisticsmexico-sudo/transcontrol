@@ -2033,6 +2033,14 @@ function ivaTotal(base, sinFactura, retention) {
   return base * (retention ? 1.12 : 1.16);
 }
 
+// Total a cobrar de un servicio. Si trae varias facturas con retención mixta,
+// el total real viene de Facturama (invoiceTotal) y ese manda.
+function totalTrip(t) {
+  if (!t) return 0;
+  if (t.amount && !t.sinFactura && t.invoiceTotal) return Number(t.invoiceTotal) || 0;
+  return ivaTotal(t.amount, t.sinFactura, t.ivaRetention);
+}
+
 function IVACalc({ base, sinFactura, retention, label = "Total a cobrar" }) {
   if (!base || base <= 0) return null;
   if (sinFactura) return (
@@ -2338,7 +2346,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
     if (filt.rsId && t.razonSocialId !== filt.rsId) return false;
     if (filt.status && (t.billingStatus || "sin_facturar") !== filt.status) return false;
     if (q) {
-      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), t.amount ? ivaTotal(t.amount, t.sinFactura, t.ivaRetention).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
+      const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), t.amount ? totalTrip(t).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -2451,7 +2459,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                         onClick={() => setEditAmt(p => ({ ...p, [t.id]: String(t.amount || "") }))}>
                         {t.amount ? (
                           <span>{fmt$(t.amount)} <span className="tsm txt2">subtotal
-                            {!t.sinFactura && <> · Total: <strong style={{ color: "var(--green)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</strong>{t.ivaRetention ? " (c/ret.)" : " +IVA"}</>}
+                            {!t.sinFactura && <> · Total: <strong style={{ color: "var(--green)" }}>{fmt$(totalTrip(t))}</strong>{t.ivaRetention ? " (c/ret.)" : " +IVA"}</>}
                           </span></span>
                         ) : <span className="tsm">+ Subtotal del servicio</span>}
                       </span>
@@ -3340,7 +3348,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
   };
   const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const qq = (q || "").trim().toLowerCase();
-  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, String(t.amount || ""), t.amount ? ivaTotal(t.amount, t.sinFactura, t.ivaRetention).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
+  const matchQ = t => !qq || [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, String(t.amount || ""), t.amount ? totalTrip(t).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ").includes(qq);
   const ft = trips.filter(t => inScope(t.date) && (selRS === "all" || t.razonSocialId === selRS) && (!selClient || t.client === selClient) && matchQ(t));
   const fo = outsourced.filter(o => inScope(o.date) && (selRS === "all" || o.razonSocialId === selRS) && (!selClient || o.client === selClient) && (!qq || [o.provider, o.origin, o.destination, o.client, o.providerInvoiceNum].map(x => (x || "").toLowerCase()).join(" ").includes(qq)));
   const bs = t => t.billingStatus || "sin_facturar";
@@ -3379,7 +3387,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
         <div className="flex gap8 tsm txt2 wrap mt4">
           <span>🤝 {t.client}</span>
-          <span style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</span>
+          <span style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(totalTrip(t))}</span>
           <span className="txt2">({fmt$(t.amount)} subtotal)</span>
           {t.invoiceNumber && <span>🧾 {t.invoiceNumber}</span>}
           {t.paidDate && <span>Cobrado: {fmtDate(t.paidDate)}</span>}
@@ -3492,7 +3500,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         title="Paso 2 — Con monto · pendiente emitir factura CFDI"
         color="bgr" icon="🧾"
         items={sinFacturar}
-        total={sinFacturar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
+        total={sinFacturar.reduce((s, t) => s + totalTrip(t), 0)}
         emptyMsg="Todos los servicios con monto tienen factura"
         renderItem={tripRow}
       />
@@ -3500,7 +3508,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         title="Paso 3 — Facturados · pendiente de cobro"
         color="ba" icon="💰"
         items={porCobrar}
-        total={porCobrar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
+        total={porCobrar.reduce((s, t) => s + totalTrip(t), 0)}
         emptyMsg="No hay facturas pendientes de cobro"
         renderItem={tripRow}
       />
@@ -3509,7 +3517,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
           title="PPD · pendiente complemento de pago SAT"
           color="bb" icon="📄"
           items={sinCompl}
-          total={sinCompl.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0)}
+          total={sinCompl.reduce((s, t) => s + totalTrip(t), 0)}
           emptyMsg="Todos los PPD tienen complemento emitido"
           renderItem={tripRow}
         />
@@ -3933,7 +3941,7 @@ function AdminComplementos({ trips, onUpdate }) {
   const done = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "pagado")
     .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
   const [showDone, setShowDone] = useState(false);
-  const totalPending = pending.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+  const totalPending = pending.reduce((s, t) => s + totalTrip(t), 0);
   const save = (id, patch) => onUpdate(id, patch);
   return (
     <div className="ap">
@@ -3959,7 +3967,7 @@ function AdminComplementos({ trips, onUpdate }) {
                 </div>
                 <div className="fcol" style={{ alignItems: "flex-end", gap: 4 }}>
                   <span className="badge ba">PPD — Pdte. complemento</span>
-                  {t.amount > 0 && <span style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}</span>}
+                  {t.amount > 0 && <span style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt$(totalTrip(t))}</span>}
                 </div>
               </div>
               <div className="flex aic gap8 wrap">
@@ -4113,15 +4121,15 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
   // ── Calculations ──
   const calcPeriodo = (p) => {
     const pTrips = trips.filter(t => t.date.startsWith(p));
-    const ingresos = pTrips.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    const ingresos = pTrips.reduce((s, t) => s + totalTrip(t), 0);
     const gastosGen = expenses.filter(e => (e.month || e.date?.slice(0,7)) === p).reduce((s, e) => s + (e.amount||0), 0);
     const gastosViaje = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).reduce((ss, e) => ss + (e.amount||0), 0), 0);
     const tercerizados = outsourced.filter(o => (o.date||"").startsWith(p)).reduce((s, o) => s + (o.providerAmount||0), 0);
     const totalGastos = gastosGen + gastosViaje + tercerizados;
     const utilidad = ingresos - totalGastos;
     // Cobros y pagos efectivos del periodo
-    const cobrado = pTrips.filter(t => t.billingStatus === "pagado").reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
-    const porCobrar = pTrips.filter(t => t.billingStatus !== "pagado" && t.amount > 0).reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    const cobrado = pTrips.filter(t => t.billingStatus === "pagado").reduce((s, t) => s + totalTrip(t), 0);
+    const porCobrar = pTrips.filter(t => t.billingStatus !== "pagado" && t.amount > 0).reduce((s, t) => s + totalTrip(t), 0);
     const pagadoProv = outsourced.filter(o => (o.date||"").startsWith(p) && o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
     const porPagarProv = outsourced.filter(o => (o.date||"").startsWith(p) && !o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
     const pagadoGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid === true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
@@ -4132,7 +4140,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
   // Outstanding from ALL past periods (not current month)
   const pastPendingReceivable = trips
     .filter(t => !t.date.startsWith(curMon) && t.billingStatus !== "pagado" && (t.amount||0) > 0)
-    .reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+    .reduce((s, t) => s + totalTrip(t), 0);
   const pastPendingPayable = outsourced
     .filter(o => !(o.date||"").startsWith(curMon) && !o.paid)
     .reduce((s, o) => s + (o.providerAmount||0), 0)
@@ -4384,7 +4392,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
                   <BillingBadge v={t.billingStatus||"sin_facturar"} mp={t.metodoPago} />
                 </div>
                 <div style={{ fontWeight: 800, color: "var(--amber)", textAlign: "right" }}>
-                  {fmt$(ivaTotal(t.amount, t.sinFactura, t.ivaRetention))}
+                  {fmt$(totalTrip(t))}
                 </div>
               </div>
             ))
@@ -4449,7 +4457,7 @@ function AdminPanel({ trips, outsourced, expenses }) {
 
   // Cuentas por cobrar (global, total a depositar c/IVA) por antigüedad
   const porCobrar = trips.filter(t => (t.amount || 0) > 0 && ["facturado", "sin_factura"].includes(t.billingStatus));
-  const cxcTotal = porCobrar.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0);
+  const cxcTotal = porCobrar.reduce((s, t) => s + totalTrip(t), 0);
   const buckets = [
     { l: "0-15 días", min: 0, max: 15, c: "var(--green)" },
     { l: "16-30 días", min: 16, max: 30, c: "var(--amber)" },
@@ -4457,7 +4465,7 @@ function AdminPanel({ trips, outsourced, expenses }) {
     { l: "+60 días", min: 61, max: 99999, c: "var(--red)" },
   ].map(b => {
     const its = porCobrar.filter(t => { const d = daysSince(t.date); return d !== null && d >= b.min && d <= b.max; });
-    return { ...b, n: its.length, tot: its.reduce((s, t) => s + ivaTotal(t.amount, t.sinFactura, t.ivaRetention), 0) };
+    return { ...b, n: its.length, tot: its.reduce((s, t) => s + totalTrip(t), 0) };
   });
   const maxB = Math.max(...buckets.map(b => b.tot), 1);
 
