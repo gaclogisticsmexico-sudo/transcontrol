@@ -18,7 +18,7 @@ const BILLING = [
   { v: "pagado", l: "Pagado", c: "bg" },
   { v: "complemento", l: "Complemento emitido", c: "bb" },
 ];
-const EXP_CATS = ["Combustible", "Mantenimiento", "Peajes", "Viáticos", "Seguro", "Comisión", "Sueldos", "Patios reguladores", "Otro"];
+const EXP_CATS = ["Combustible", "Mantenimiento", "Peajes", "Viáticos", "Seguro", "Comisión", "Sueldos", "Patios reguladores", "Renta", "Pago de crédito", "Otro"];
 const TRIP_EXP_CATS = ["Comisión", "Combustible", "Casetas", "Llantas / Mecánico", "Pensión / Estadía", "Patios reguladores", "Viáticos", "Seguro", "Otro"];
 const CHECKLIST = [
   { id: "luces_del", l: "Luces delanteras" }, { id: "luces_tra", l: "Luces traseras/stop" },
