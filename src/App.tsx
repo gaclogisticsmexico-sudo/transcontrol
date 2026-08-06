@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
@@ -4443,6 +4443,130 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
 
 // ═══ PANEL — vista ejecutiva para toma de decisiones (la visión: la app como
 // tablero visual y la operación diaria por el bot) ═══
+// ─── FLOTA: km reales del GPS, mantenimiento y $/km ──────────────────────────
+// Los datos vienen del bot (tr:gps_km lo guarda cada noche con Webfleet;
+// tr:mantenimientos se alimenta por chat con los km reales).
+function AdminFlota({ gpsKm, mantenimientos, vehicles, expenses, trips }) {
+  const plateNorm = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const mesActual = nowMon();
+  const hoy = today();
+  const hace = d => { const x = new Date(); x.setDate(x.getDate() - d); return x.toISOString().slice(0, 10); };
+
+  // Por unidad del GPS: hoy / 7 días / mes, odómetro y última posición
+  const unidades = useMemo(() => {
+    const agg = {};
+    for (const e of gpsKm || []) {
+      const u = agg[e.unidad] ||= { unidad: e.unidad, hoy: 0, d7: 0, mes: 0, odo: 0, pos: "", posHora: "", dias: {} };
+      const km = Number(e.km) || 0;
+      if (e.fecha === hoy) u.hoy += km;
+      if (e.fecha >= hace(7)) u.d7 += km;
+      if (String(e.fecha).startsWith(mesActual)) u.mes += km;
+      u.dias[e.fecha] = (u.dias[e.fecha] || 0) + km;
+      if ((Number(e.odometro_km) || 0) >= u.odo) {
+        u.odo = Number(e.odometro_km) || 0;
+        if (e.posicion) { u.pos = e.posicion; u.posHora = e.hora_posicion || ""; }
+      }
+    }
+    return Object.values(agg).sort((a, b) => a.unidad.localeCompare(b.unidad));
+  }, [gpsKm]);
+
+  // Mantenimiento: registro del bot; si no hay, cae al lastMaintenanceKm de la unidad
+  const mantDe = (u) => {
+    const regs = (mantenimientos || []).filter(m => plateNorm(m.placa) && plateNorm(u.unidad).includes(plateNorm(m.placa)));
+    if (regs.length) return regs.map(m => ({ tipo: m.tipo, ultimo: Number(m.ultimo_km) || 0, intervalo: Number(m.intervalo_km) || 10000 }));
+    const v = (vehicles || []).find(v => plateNorm(v.plates) && plateNorm(u.unidad).includes(plateNorm(v.plates)));
+    if (v && Number(v.lastMaintenanceKm)) return [{ tipo: "servicio", ultimo: Number(v.lastMaintenanceKm), intervalo: Number(v.maintenanceKm) || 10000 }];
+    return [];
+  };
+
+  // $/km del mes: gastos de Combustible del mes ÷ km del mes (toda la flota)
+  const dieselMes = (expenses || []).filter(g => (g.month || "").startsWith(mesActual) && g.cat === "Combustible")
+    .reduce((s, g) => s + (Number(g.amount) || 0), 0);
+  const kmMes = unidades.reduce((s, u) => s + u.mes, 0);
+  const kmHoy = unidades.reduce((s, u) => s + u.hoy, 0);
+
+  // Gráfica: km por día (últimos 14), una barra por unidad
+  const chart = useMemo(() => {
+    const dias = {};
+    for (const e of gpsKm || []) {
+      if (e.fecha < hace(14)) continue;
+      (dias[e.fecha] ||= { d: e.fecha.slice(5) })[e.unidad] = Math.round((Number(e.km) || 0) + (dias[e.fecha]?.[e.unidad] || 0));
+    }
+    return Object.keys(dias).sort().map(k => dias[k]);
+  }, [gpsKm]);
+  const nombres = unidades.map(u => u.unidad);
+  const colores = ["#4f8ef7", "#34c38f", "#f7b84b", "#f46a6a", "#9b7ff5", "#50c8e8"];
+
+  if (!unidades.length) return (
+    <div className="ap"><div className="stitle">🚚 Flota</div>
+      <div className="tsm" style={{ color: "var(--txt2)" }}>Todavía no hay datos del GPS. El bot guarda la foto de la flota cada noche (Webfleet); mañana ya se ve aquí.</div>
+    </div>
+  );
+
+  return (
+    <div className="ap">
+      <div className="stitle">🚚 Flota (km reales del GPS)</div>
+      <div className="g4" style={{ marginBottom: 12 }}>
+        <div className="card"><div className="tsm">Km hoy (flota)</div><div style={{ fontSize: 22, fontWeight: 800 }}>{kmHoy.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</div></div>
+        <div className="card"><div className="tsm">Km {mesActual}</div><div style={{ fontSize: 22, fontWeight: 800 }}>{kmMes.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</div></div>
+        <div className="card"><div className="tsm">Diesel {mesActual}</div><div style={{ fontSize: 22, fontWeight: 800 }}>{fmt$(dieselMes)}</div></div>
+        <div className="card"><div className="tsm">Costo por km</div><div style={{ fontSize: 22, fontWeight: 800 }}>{kmMes > 0 ? fmt$(dieselMes / kmMes) : "—"}<span className="tsm"> /km</span></div></div>
+      </div>
+
+      {chart.length > 1 && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="tsm" style={{ marginBottom: 6 }}>Km por día (últimos 14)</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={chart} margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+              <XAxis dataKey="d" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} width={36} />
+              <Tooltip /><Legend wrapperStyle={{ fontSize: 10 }} />
+              {nombres.map((n, i) => <Bar key={n} dataKey={n} stackId="km" fill={colores[i % colores.length]} />)}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {unidades.map(u => {
+        const mants = mantDe(u);
+        return (
+          <div className="card" key={u.unidad} style={{ marginBottom: 10 }}>
+            <div className="flex aic gap8" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 800 }}>{u.unidad}</div>
+              <div className="tsm">odómetro <strong>{u.odo.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</strong></div>
+            </div>
+            <div className="tsm" style={{ margin: "4px 0" }}>
+              Hoy <strong>{u.hoy.toFixed(0)} km</strong> · 7 días <strong>{u.d7.toFixed(0)} km</strong> · mes <strong>{u.mes.toFixed(0)} km</strong>
+            </div>
+            {u.pos && <div className="tsm" style={{ color: "var(--txt2)" }}>📍 {u.pos}{u.posHora ? ` (${u.posHora.slice(5)})` : ""}</div>}
+            {mants.map((m, i) => {
+              const proximo = m.ultimo + m.intervalo;
+              const rest = proximo - u.odo;
+              const pct = Math.min(100, Math.max(0, ((u.odo - m.ultimo) / m.intervalo) * 100));
+              const color = rest <= 0 ? "var(--red)" : rest <= 1000 ? "var(--amber)" : "var(--green)";
+              return (
+                <div key={i} style={{ marginTop: 6 }}>
+                  <div className="tsm flex" style={{ justifyContent: "space-between" }}>
+                    <span>🔧 {m.tipo} (cada {m.intervalo.toLocaleString()} km)</span>
+                    <span style={{ color, fontWeight: 700 }}>
+                      {rest <= 0 ? `VENCIDO hace ${Math.abs(rest).toLocaleString(undefined, { maximumFractionDigits: 0 })} km` : `faltan ${rest.toLocaleString(undefined, { maximumFractionDigits: 0 })} km`}
+                    </span>
+                  </div>
+                  <div style={{ background: "var(--bg3)", borderRadius: 4, height: 8, marginTop: 3 }}>
+                    <div style={{ width: pct + "%", background: color, height: 8, borderRadius: 4 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+      <div className="tsm" style={{ color: "var(--txt2)", marginTop: 6 }}>
+        Los servicios se registran por el bot: "a la Isuzu le hicimos el servicio" (toma el km real del GPS).
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ trips, outsourced, expenses }) {
   const [mk, setMk] = useState(nowMon());
   const months = [...new Set([...trips.map(t => (t.date || "").slice(0, 7)), ...outsourced.map(o => (o.date || "").slice(0, 7))].filter(Boolean))].sort().reverse();
@@ -4584,7 +4708,7 @@ function AdminPanel({ trips, outsourced, expenses }) {
   );
 }
 
-function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
+function AdminApp({ gpsKm, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -4593,6 +4717,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
   const tabs = [
     { id: "panel", l: "📈 Panel" },
     { id: "dashboard", l: "📊 Dashboard" },
+    { id: "flota", l: "🚚 Flota" },
     { id: "socios", l: "👥 Socios" },
     { id: "pendientes", l: `📋 Cierre${pendCount > 0 ? ` (${pendCount})` : ""}` },
     { id: "tarifario", l: "📋 Tarifario" },
@@ -4631,6 +4756,7 @@ function AdminApp({ trips, inspections, vehicles, drivers, expenses, outsourced,
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
         {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} />}
+        {tab === "flota" && <AdminFlota gpsKm={gpsKm} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
@@ -4670,6 +4796,8 @@ export default function App() {
   const [socios, setSocios] = useState([]);
   const [distributions, setDistributions] = useState([]);
   const [tarifario, setTarifario] = useState([]);
+  const [gpsKm, setGpsKm] = useState([]);           // foto diaria del GPS (bot)
+  const [mantenimientos, setMantenimientos] = useState([]);
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
@@ -4705,6 +4833,8 @@ export default function App() {
           listen("tr:socios", v => setSocios(v || []), []),
           listen("tr:distributions", v => setDistributions(v || []), []),
           listen("tr:tarifario", v => setTarifario(v || []), []),
+          listen("tr:gps_km", v => setGpsKm(v || []), []),
+          listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
         ];
       } catch (e) { console.error("listeners", e.message); }
       const safety = setTimeout(() => setLoading(false), 8000);
@@ -4825,7 +4955,7 @@ export default function App() {
   );
 
   return (
-    <AdminApp trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
+    <AdminApp gpsKm={gpsKm} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
       socios={socios} distributions={distributions} tarifario={tarifario}
