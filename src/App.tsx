@@ -314,7 +314,7 @@ async function downloadClientZip(client, month, clientTrips) {
 }
 
 
-function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, gpsOrigin, gpsDestination, gpsVehicleId, onSave, onCancel }) {
+function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, gpsOrigin, gpsDestination, gpsVehicleId, trips, onSave, onCancel }) {
   const [f, setF] = useState({
     date: today(), origin: gpsOrigin || "", destination: gpsDestination || "", departTime: "", arriveTime: "",
     cargo: "general", vehicleId: gpsVehicleId || vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
@@ -337,8 +337,48 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
     if (!f.origin || !f.destination || !f.client || !f.vehicleId) { alert("Completa: Origen, Destino, Cliente y Unidad"); return; }
     onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() });
   };
+
+  // Rutas frecuentes: minadas de los viajes históricos (cliente+origen+destino
+  // repetidos). Un toque llena cliente, ruta, mercancía y razón social.
+  const rutasFrec = useMemo(() => {
+    const norm = x => String(x || "").trim().toLowerCase();
+    const agg = {};
+    for (const t of trips || []) {
+      if (!t.client || !t.origin || !t.destination) continue;
+      const k = norm(t.client) + "|" + norm(t.origin) + "|" + norm(t.destination);
+      const a = agg[k] ||= { client: t.client, origin: t.origin, destination: t.destination,
+                             cargo: t.cargo || "general", razonSocialId: t.razonSocialId || "", veces: 0, ultima: "" };
+      a.veces++;
+      if ((t.date || "") > a.ultima) { a.ultima = t.date || ""; a.cargo = t.cargo || a.cargo; a.razonSocialId = t.razonSocialId || a.razonSocialId; }
+    }
+    return Object.values(agg).filter(r => r.veces >= 2)
+      .sort((x, y) => y.veces - x.veces || (y.ultima > x.ultima ? 1 : -1)).slice(0, 10);
+  }, [trips]);
+  const usarRuta = r => setF(p => ({ ...p, client: r.client, origin: r.origin, destination: r.destination,
+    cargo: r.cargo || p.cargo, razonSocialId: r.razonSocialId || p.razonSocialId,
+    originModified: false, destinationModified: false }));
+  const rutaActiva = r => f.client === r.client && f.origin === r.origin && f.destination === r.destination;
+
   return (
     <div>
+      {rutasFrec.length > 0 && !gpsOrigin && (
+        <div className="mb12">
+          <div className="tsm txt2" style={{ marginBottom: 6 }}>⭐ Rutas frecuentes — un toque y se llena solo:</div>
+          <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+            {rutasFrec.map((r, i) => (
+              <button key={i} type="button" onClick={() => usarRuta(r)}
+                className="btn btn-sm"
+                style={{ whiteSpace: "nowrap", flexShrink: 0, textAlign: "left", lineHeight: 1.25,
+                         background: rutaActiva(r) ? "var(--blue)" : "var(--bg3)",
+                         border: "1px solid " + (rutaActiva(r) ? "var(--blue)" : "var(--border)"),
+                         color: rutaActiva(r) ? "#fff" : "var(--txt)" }}>
+                <div style={{ fontWeight: 700, fontSize: 12 }}>{r.client}</div>
+                <div className="tsm" style={{ fontSize: 11, opacity: .85 }}>{r.origin} → {r.destination}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="g2 mb12">
         <Field label="Fecha *"><input type="date" value={f.date} onChange={set("date")} /></Field>
         {!isChofer && <Field label="Razón Social"><select value={f.razonSocialId} onChange={set("razonSocialId")}>{razones.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field>}
@@ -1063,7 +1103,7 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
             </div>
           )}
           <div className="stitle mb12">Registrar Nuevo Viaje</div>
-          <TripForm drivers={drivers} vehicles={av} razones={razones} clients={clients} currentDriver={driver} isChofer={true}
+          <TripForm trips={trips} drivers={drivers} vehicles={av} razones={razones} clients={clients} currentDriver={driver} isChofer={true}
             gpsOrigin={gpsTrip?.startData?.address} gpsDestination={gpsTrip?.endLoc?.address} gpsVehicleId={gpsTrip?.vehicleId}
             onSave={t => { onAdd(t); showToast("Viaje registrado"); setGpsTrip(null); setView("home"); }}
             onCancel={() => { setGpsTrip(null); setView("home"); }} />
@@ -2358,7 +2398,7 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
       {showForm && (
         <div className="card mb16">
           <div className="flex aic jb mb12"><span style={{ fontWeight: 700 }}>Registrar Viaje</span><button className="btn btn-g btn-sm" onClick={() => setShowForm(false)}>✕</button></div>
-          <TripForm drivers={drivers} vehicles={vehicles.filter(v => v.active)} razones={razones} clients={clients} currentDriver={null} isChofer={false}
+          <TripForm trips={trips} drivers={drivers} vehicles={vehicles.filter(v => v.active)} razones={razones} clients={clients} currentDriver={null} isChofer={false}
             onSave={t => { onAdd(t); setShowForm(false); }} onCancel={() => setShowForm(false)} />
         </div>
       )}
