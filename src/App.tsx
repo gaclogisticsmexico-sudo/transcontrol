@@ -2367,7 +2367,33 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
   );
 }
 
-function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd, tarifario, onUpsertTarifa }) {
+function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd, tarifario, onUpsertTarifa }) {
+  // $/km real por placa (cargas Edenred 30 dias / km GPS 30 dias); si una unidad
+  // no tiene cargas, se usa el promedio de la flota. Sirve para estimar el
+  // diesel de cada viaje con sus km reales (t.gpsKm, lo escribe el bot).
+  const costoKm = useMemo(() => {
+    const pn = x => String(x || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const hace30 = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+    const por = {};
+    for (const e of gpsKm || []) {
+      if (e.fecha < hace30) continue;
+      const placa = (vehicles || []).find(v => pn(v.plates) && pn(e.unidad).includes(pn(v.plates)))?.plates;
+      if (!placa) continue;
+      (por[pn(placa)] ||= { km: 0, gasto: 0 }).km += Number(e.km) || 0;
+    }
+    for (const c of cargasComb || []) {
+      if ((c.fecha || "") < hace30) continue;
+      (por[pn(c.placa)] ||= { km: 0, gasto: 0 }).gasto += Number(c.monto) || 0;
+    }
+    const out = {}; let tk = 0, tg = 0;
+    for (const [k, v] of Object.entries(por)) {
+      tk += v.km; tg += v.gasto;
+      if (v.km > 0 && v.gasto > 0) out[k] = v.gasto / v.km;
+    }
+    out._flota = tk > 0 && tg > 0 ? tg / tk : 0;
+    return out;
+  }, [gpsKm, cargasComb, vehicles]);
+
   const [filt, setFilt] = useState({ month: "", client: "", driverId: "", vehicleId: "", rsId: "", status: "", q: "" });
   const [editAmt, setEditAmt] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -2503,6 +2529,17 @@ function AdminViajes({ trips, vehicles, drivers, razones, clients, onUpdate, onD
                           </span></span>
                         ) : <span className="tsm">+ Subtotal del servicio</span>}
                       </span>
+                      {Number(t.gpsKm) > 0 && (() => {
+                        const pn = x => String(x || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+                        const ck = costoKm[pn(gv(t.vehicleId)?.plates)] || costoKm._flota || 0;
+                        return (
+                          <span className="tsm txt2">
+                            🛰️ {Number(t.gpsKm).toFixed(0)} km GPS{t.gpsKmAprox ? " (aprox)" : ""}
+                            {ck > 0 && <> · diesel ≈ <span style={{ color: "var(--red)" }}>{fmt$(t.gpsKm * ck)}</span></>}
+                            {ck > 0 && t.amount > 0 && <> · margen ≈ <strong style={{ color: (t.amount - t.gpsKm * ck) > 0 ? "var(--green)" : "var(--red)" }}>{fmt$(t.amount - t.gpsKm * ck - (t.tripExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0))}</strong></>}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
                   {te > 0 && <span className="tsm" style={{ color: "var(--red)" }}>- {fmt$(te)} gastos</span>}
@@ -4486,7 +4523,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
 // ─── FLOTA: km reales del GPS, mantenimiento y $/km ──────────────────────────
 // Los datos vienen del bot (tr:gps_km lo guarda cada noche con Webfleet;
 // tr:mantenimientos se alimenta por chat con los km reales).
-function AdminFlota({ gpsKm, mantenimientos, vehicles, expenses, trips }) {
+function AdminFlota({ gpsKm, cargasComb, mantenimientos, vehicles, expenses, trips }) {
   const plateNorm = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const mesActual = nowMon();
   const hoy = today();
@@ -4578,6 +4615,20 @@ function AdminFlota({ gpsKm, mantenimientos, vehicles, expenses, trips }) {
               Hoy <strong>{u.hoy.toFixed(0)} km</strong> · 7 días <strong>{u.d7.toFixed(0)} km</strong> · mes <strong>{u.mes.toFixed(0)} km</strong>
             </div>
             {u.pos && <div className="tsm" style={{ color: "var(--txt2)" }}>📍 {u.pos}{u.posHora ? ` (${u.posHora.slice(5)})` : ""}</div>}
+            {(() => {
+              // Rendimiento real: cargas de Edenred (30 días) vs km del GPS
+              const c30 = (cargasComb || []).filter(c => c.fecha >= hace(30) && plateNorm(c.placa) && plateNorm(u.unidad).includes(plateNorm(c.placa)));
+              const litros = c30.reduce((s, c) => s + (Number(c.litros) || 0), 0);
+              const gasto = c30.reduce((s, c) => s + (Number(c.monto) || 0), 0);
+              const km30 = (gpsKm || []).filter(e => e.unidad === u.unidad && e.fecha >= hace(30)).reduce((s, e) => s + (Number(e.km) || 0), 0);
+              if (!litros) return <div className="tsm" style={{ color: "var(--txt2)" }}>⛽ Sin cargas registradas — manda el reporte de Edenred al bot</div>;
+              return (
+                <div className="tsm" style={{ marginTop: 2 }}>
+                  ⛽ 30 días: <strong>{litros.toFixed(0)} L</strong> · {fmt$(gasto)}
+                  {km30 > 0 && <> · <strong>{(km30 / litros).toFixed(2)} km/L</strong> · <strong>{fmt$(gasto / km30)}/km</strong></>}
+                </div>
+              );
+            })()}
             {mants.map((m, i) => {
               const proximo = m.ultimo + m.intervalo;
               const rest = proximo - u.odo;
@@ -4748,7 +4799,7 @@ function AdminPanel({ trips, outsourced, expenses }) {
   );
 }
 
-function AdminApp({ gpsKm, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
+function AdminApp({ gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -4796,14 +4847,14 @@ function AdminApp({ gpsKm, mantenimientos, trips, inspections, vehicles, drivers
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
         {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} />}
-        {tab === "flota" && <AdminFlota gpsKm={gpsKm} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
+        {tab === "flota" && <AdminFlota gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={id => onUpsertTarifa && saveTarifario && undefined} />}
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
-        {tab === "viajes" && <AdminViajes trips={trips} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
+        {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
         {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
@@ -4837,6 +4888,7 @@ export default function App() {
   const [distributions, setDistributions] = useState([]);
   const [tarifario, setTarifario] = useState([]);
   const [gpsKm, setGpsKm] = useState([]);           // foto diaria del GPS (bot)
+  const [cargasComb, setCargasComb] = useState([]);  // cargas Edenred (bot)
   const [mantenimientos, setMantenimientos] = useState([]);
 
   useEffect(() => {
@@ -4874,6 +4926,7 @@ export default function App() {
           listen("tr:distributions", v => setDistributions(v || []), []),
           listen("tr:tarifario", v => setTarifario(v || []), []),
           listen("tr:gps_km", v => setGpsKm(v || []), []),
+          listen("tr:cargas_combustible", v => setCargasComb(v || []), []),
           listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
         ];
       } catch (e) { console.error("listeners", e.message); }
@@ -4995,7 +5048,7 @@ export default function App() {
   );
 
   return (
-    <AdminApp gpsKm={gpsKm} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
+    <AdminApp gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
       socios={socios} distributions={distributions} tarifario={tarifario}
