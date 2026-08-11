@@ -4785,7 +4785,7 @@ function AdminFlota({ gpsKm, cargasComb, mantenimientos, vehicles, expenses, tri
   );
 }
 
-function AdminPanel({ trips, outsourced, expenses }) {
+function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) {
   const [mk, setMk] = useState(nowMon());
   const months = [...new Set([...trips.map(t => (t.date || "").slice(0, 7)), ...outsourced.map(o => (o.date || "").slice(0, 7))].filter(Boolean))].sort().reverse();
 
@@ -4852,6 +4852,43 @@ function AdminPanel({ trips, outsourced, expenses }) {
           {months.map(m => <option key={m} value={m}>{m === nowMon() ? m + " (actual)" : m}</option>)}
         </select>
       </div>
+
+      {(() => {
+        // HOY en vivo: quién ya checó (verificado contra el GPS) y la flota
+        const td = today();
+        const hoy = (checadas || []).filter(c => c.fecha === td);
+        const porChofer = {};
+        for (const c of hoy) (porChofer[c.driverName || "?"] ||= []).push(c);
+        const gpsHoy = (gpsKm || []).filter(e => e.fecha === td);
+        const kmHoy = gpsHoy.reduce((s, e) => s + (Number(e.km) || 0), 0);
+        if (!hoy.length && !gpsHoy.length) return null;
+        const mini = c => c.estado === "verificada" ? "✓" : c.estado === "pendiente" || !c.estado ? "…" : "⚠";
+        return (
+          <div className="card" style={{ marginBottom: 14 }}>
+            <div className="flex aic jb wrap gap8">
+              <div style={{ fontWeight: 800 }}>⏱️ Hoy</div>
+              {kmHoy > 0 && <span className="tsm txt2">🚚 flota {kmHoy.toFixed(0)} km (última foto GPS)</span>}
+            </div>
+            {Object.keys(porChofer).length === 0 ? (
+              <div className="tsm txt2 mt4">Nadie ha checado todavía.</div>
+            ) : (
+              <div className="flex wrap gap8 mt8">
+                {Object.entries(porChofer).sort().map(([nombre, chs]) => {
+                  const ord = [...chs].sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
+                  const ent = ord.find(c => c.tipo === "entrada");
+                  const sal = [...ord].reverse().find(c => c.tipo === "salida");
+                  const alerta = ord.some(c => ["sin_unidad", "sin_ubicacion"].includes(c.estado));
+                  return (
+                    <span key={nombre} className={`badge ${alerta ? "br" : sal ? "bb" : "bg"}`} style={{ fontSize: 12, padding: "4px 10px" }}>
+                      {nombre.split(" ")[0]} {ent ? `${mini(ent)} ${String(ent.hora).slice(11)}` : ""}{sal ? ` → ${mini(sal)} ${String(sal.hora).slice(11)}` : ent ? " · trabajando" : ""}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
         <div className="card kpi"><div className="kv" style={{ color: "var(--green)" }}>{fmt$(ingMes)}</div><div className="kl">Ingresos {mk}</div></div>
@@ -4974,7 +5011,7 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
       </div>
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
-        {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} />}
+        {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} checadas={checadas} gpsKm={gpsKm} vehicles={vehicles} />}
         {tab === "checador" && <AdminChecador checadas={checadas} drivers={drivers} />}
         {tab === "flota" && <AdminFlota gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
