@@ -744,13 +744,75 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant, onGPSTr
   );
 }
 
-function ChoferHome({ driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
+function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
   const td = today(); const mk = nowMon();
   const my = trips.filter(t => t.driverId === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
   const lastIns = [...inspections.filter(i => i.driverId === driver.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+
+  // ── Checador: entrada/salida con ubicación del teléfono. El bot la verifica
+  // contra el GPS de las unidades (debe estar a <250 m de una) en minutos.
+  const [checando, setChecando] = useState(false);
+  const misChecadas = (checadas || []).filter(c => c.driverId === driver.id && c.fecha === td)
+    .sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
+  const ultEntrada = [...misChecadas].reverse().find(c => c.tipo === "entrada");
+  const ultSalida = [...misChecadas].reverse().find(c => c.tipo === "salida");
+  const turnoAbierto = ultEntrada && (!ultSalida || String(ultSalida.hora) < String(ultEntrada.hora));
+  const checar = (tipo) => {
+    if (checando) return;
+    if (!navigator.geolocation) { alert("Este teléfono no da ubicación; avisa a Alan."); return; }
+    setChecando(true);
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const ahora = new Date();
+        const hora = `${td} ${String(ahora.getHours()).padStart(2, "0")}:${String(ahora.getMinutes()).padStart(2, "0")}`;
+        onChecar({
+          id: genId(), driverId: driver.id, driverName: driver.name,
+          tipo, fecha: td, hora,
+          lat: Math.round(pos.coords.latitude * 1e6), lon: Math.round(pos.coords.longitude * 1e6),
+          precision_m: Math.round(pos.coords.accuracy || 0),
+          estado: "pendiente", createdAt: ahora.toISOString(),
+        });
+        setChecando(false);
+      },
+      err => { alert("No pude obtener tu ubicación (" + err.message + "). Activa el GPS del teléfono e intenta de nuevo."); setChecando(false); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+    );
+  };
+  const badgeChecada = c => c.estado === "verificada"
+    ? <span className="badge bg" style={{ fontSize: 10 }}>✓ {c.unidad ? `con ${String(c.unidad).split(" ").pop()}` : "verificada"}</span>
+    : c.estado === "sin_unidad" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin unidad cerca</span>
+    : c.estado === "sin_ubicacion" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin ubicación</span>
+    : <span className="badge ba" style={{ fontSize: 10 }}>verificando…</span>;
+
   return (
     <div className="page">
+      <div className="card mb16">
+        <div className="flex aic jb mb8">
+          <div style={{ fontWeight: 800 }}>⏱️ Checador</div>
+          {turnoAbierto && ultEntrada && <span className="tsm txt2">entrada {String(ultEntrada.hora).slice(11)}</span>}
+        </div>
+        {!turnoAbierto ? (
+          <button className="btn btn-a" style={{ width: "100%", padding: 14, fontSize: 16 }} disabled={checando} onClick={() => checar("entrada")}>
+            {checando ? "Obteniendo ubicación…" : "✅ CHECAR ENTRADA"}
+          </button>
+        ) : (
+          <button className="btn" style={{ width: "100%", padding: 14, fontSize: 16, background: "var(--amber)", color: "#000", fontWeight: 700 }} disabled={checando} onClick={() => checar("salida")}>
+            {checando ? "Obteniendo ubicación…" : "🏁 CHECAR SALIDA"}
+          </button>
+        )}
+        {misChecadas.length > 0 && (
+          <div className="fcol gap4 mt8">
+            {misChecadas.map(c => (
+              <div key={c.id} className="flex aic jb tsm">
+                <span>{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
+                {badgeChecada(c)}
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="tsm txt2 mt8">Checa junto a tu unidad: se confirma con el GPS de la camioneta.</div>
+      </div>
       {pending.length > 0 && (
         <div className="mb16">
           <div className="stitle" style={{ color: "var(--amber)" }}>📋 Instrucciones pendientes ({pending.length})</div>
@@ -1049,7 +1111,7 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
   );
 }
 
-function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, clients, instructions, instant, statusRequests, onAdd, onUpdate, onAddIns, onAck, onUpdateInstant, onUpdStatusRequest, onLogout }) {
+function ChoferApp({ checadas, onChecar, driver, trips, inspections, vehicles, drivers, razones, clients, instructions, instant, statusRequests, onAdd, onUpdate, onAddIns, onAck, onUpdateInstant, onUpdStatusRequest, onLogout }) {
   const [view, setView] = useState("home");
   const [toast, setToast] = useState("");
   const [relayTrip, setRelayTrip] = useState(null);
@@ -1080,7 +1142,7 @@ function ChoferApp({ driver, trips, inspections, vehicles, drivers, razones, cli
         </div>
       </div>
       {toast && <div className="toast">✓ {toast}</div>}
-      {view === "home" && <ChoferHome driver={driver} trips={trips} inspections={inspections} instructions={instructions}
+      {view === "home" && <ChoferHome checadas={checadas} onChecar={onChecar} driver={driver} trips={trips} inspections={inspections} instructions={instructions}
         availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests}
         onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
         onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest}
@@ -4520,6 +4582,71 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
 
 // ═══ PANEL — vista ejecutiva para toma de decisiones (la visión: la app como
 // tablero visual y la operación diaria por el bot) ═══
+// ─── CHECADOR: horas de los choferes, verificadas contra el GPS ──────────────
+function AdminChecador({ checadas, drivers }) {
+  const dias = useMemo(() => {
+    const out = {};
+    for (const c of checadas || []) {
+      ((out[c.fecha] ||= {})[c.driverName || c.driverId] ||= []).push(c);
+    }
+    return Object.entries(out).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7);
+  }, [checadas]);
+
+  const badge = c => c.estado === "verificada"
+    ? <span className="badge bg" style={{ fontSize: 10 }}>✓ {c.unidad ? String(c.unidad).split(" ").pop() : "OK"}{c.distancia_m != null ? ` · ${c.distancia_m} m` : ""}{c.en_base ? " · en base" : ""}</span>
+    : c.estado === "sin_unidad" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin unidad cerca{c.distancia_m != null ? ` (${c.distancia_m} m)` : ""}</span>
+    : c.estado === "sin_ubicacion" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin ubicación</span>
+    : <span className="badge ba" style={{ fontSize: 10 }}>verificando…</span>;
+
+  const horas = chs => {
+    const ent = chs.find(c => c.tipo === "entrada");
+    const sal = [...chs].reverse().find(c => c.tipo === "salida");
+    if (!ent || !sal) return null;
+    const [h1, m1] = String(ent.hora).slice(11).split(":").map(Number);
+    const [h2, m2] = String(sal.hora).slice(11).split(":").map(Number);
+    const dif = (h2 * 60 + m2 - h1 * 60 - m1) / 60;
+    return dif > 0 ? dif.toFixed(1) : null;
+  };
+
+  if (!dias.length) return (
+    <div className="ap"><div className="stitle">⏱️ Checador</div>
+      <div className="tsm txt2">Sin checadas todavía. Los choferes checan entrada/salida desde su app (botón en su pantalla de inicio); cada checada se verifica contra el GPS de las unidades.</div>
+    </div>
+  );
+
+  return (
+    <div className="ap">
+      <div className="stitle">⏱️ Checador (verificado contra el GPS de las unidades)</div>
+      {dias.map(([fecha, porChofer]) => (
+        <div className="card mb12" key={fecha}>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>{fmtDate(fecha)}</div>
+          {Object.entries(porChofer).sort().map(([nombre, chs]) => {
+            const ord = [...chs].sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
+            const h = horas(ord);
+            return (
+              <div key={nombre} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                <div className="flex aic jb">
+                  <span style={{ fontWeight: 700 }}>{nombre}</span>
+                  {h && <span className="tsm" style={{ fontWeight: 700 }}>{h} h</span>}
+                </div>
+                <div className="fcol gap2 mt4">
+                  {ord.map(c => (
+                    <div key={c.id} className="flex aic jb tsm">
+                      <span className="txt2">{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
+                      {badge(c)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      <div className="tsm txt2">✓ verde = el teléfono estaba a menos de 250 m de una unidad al checar. ⚠ rojo = revisar con el chofer.</div>
+    </div>
+  );
+}
+
 // ─── FLOTA: km reales del GPS, mantenimiento y $/km ──────────────────────────
 // Los datos vienen del bot (tr:gps_km lo guarda cada noche con Webfleet;
 // tr:mantenimientos se alimenta por chat con los km reales).
@@ -4799,7 +4926,7 @@ function AdminPanel({ trips, outsourced, expenses }) {
   );
 }
 
-function AdminApp({ gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
+function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -4809,6 +4936,7 @@ function AdminApp({ gpsKm, cargasComb, mantenimientos, trips, inspections, vehic
     { id: "panel", l: "📈 Panel" },
     { id: "dashboard", l: "📊 Dashboard" },
     { id: "flota", l: "🚚 Flota" },
+    { id: "checador", l: "⏱️ Checador" },
     { id: "socios", l: "👥 Socios" },
     { id: "pendientes", l: `📋 Cierre${pendCount > 0 ? ` (${pendCount})` : ""}` },
     { id: "tarifario", l: "📋 Tarifario" },
@@ -4847,6 +4975,7 @@ function AdminApp({ gpsKm, cargasComb, mantenimientos, trips, inspections, vehic
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
         {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} />}
+        {tab === "checador" && <AdminChecador checadas={checadas} drivers={drivers} />}
         {tab === "flota" && <AdminFlota gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
@@ -4889,6 +5018,7 @@ export default function App() {
   const [tarifario, setTarifario] = useState([]);
   const [gpsKm, setGpsKm] = useState([]);           // foto diaria del GPS (bot)
   const [cargasComb, setCargasComb] = useState([]);  // cargas Edenred (bot)
+  const [checadas, setChecadas] = useState([]);       // checador de choferes
   const [mantenimientos, setMantenimientos] = useState([]);
 
   useEffect(() => {
@@ -4927,6 +5057,7 @@ export default function App() {
           listen("tr:tarifario", v => setTarifario(v || []), []),
           listen("tr:gps_km", v => setGpsKm(v || []), []),
           listen("tr:cargas_combustible", v => setCargasComb(v || []), []),
+          listen("tr:checadas", v => setChecadas(v || []), []),
           listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
         ];
       } catch (e) { console.error("listeners", e.message); }
@@ -4975,6 +5106,7 @@ export default function App() {
   // carrera que perdia montos al capturar varios seguidos. La escritura es INMEDIATA
   // (sin timer), asi el ultimo monto se persiste aunque recargues al instante.
   const addTrip = t => setTrips(prev => { const u = [...prev, t]; sv("tr:trips", u); return u; });
+  const addChecada = ch => setChecadas(prev => { const u = [...prev, ch]; sv("tr:checadas", u); return u; });
   const updTrip = (id, p) => setTrips(prev => { const u = upd(prev, id, p); sv("tr:trips", u); return u; });
   const delTrip = id => setTrips(prev => { const u = prev.filter(t => t.id !== id); sv("tr:trips", u); return u; });
   const addIns = i => setInspections(prev => { const u = [...prev, i]; sv("tr:inspections", u); return u; });
@@ -5028,7 +5160,7 @@ export default function App() {
   );
 
   if (role === "chofer") return (
-    <ChoferApp driver={driver} trips={trips} inspections={inspections}
+    <ChoferApp checadas={checadas} onChecar={addChecada} driver={driver} trips={trips} inspections={inspections}
       vehicles={vehicles.filter(v => v.active)} drivers={drivers} razones={razones.filter(r => r.active)}
       clients={clients} instructions={instructions} instant={instant}
       statusRequests={statusRequests.filter(r => r.driverId === driver?.id)}
@@ -5048,7 +5180,7 @@ export default function App() {
   );
 
   return (
-    <AdminApp gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
+    <AdminApp checadas={checadas} gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
       socios={socios} distributions={distributions} tarifario={tarifario}
