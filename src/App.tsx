@@ -319,7 +319,7 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
     date: today(), origin: gpsOrigin || "", destination: gpsDestination || "", departTime: "", arriveTime: "",
     cargo: "general", vehicleId: gpsVehicleId || vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
     client: "", docNum: "", notes: "", razonSocialId: isChofer ? "" : (razones[0]?.id || ""), patioReg: false,
-    endKm: "", tripStatus: "completado",
+    endKm: "", tripStatus: "completado", leftAt: "",
     originModified: false, destinationModified: false,
   });
   const [tmpId] = useState(genId);
@@ -335,7 +335,8 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
   };
   const submit = () => {
     if (!f.origin || !f.destination || !f.client || !f.vehicleId) { alert("Completa: Origen, Destino, Cliente y Unidad"); return; }
-    onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() });
+    if (f.tripStatus === "en_curso" && !f.leftAt.trim()) { alert("Dinos dónde dejaste la carga o la unidad, para que quien lo continúe sepa de dónde seguir."); return; }
+    onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", driverName: (currentDriver?.name || drivers.find(d => d.id === f.driverId)?.name || ""), tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() });
   };
 
   // Rutas frecuentes: minadas de los viajes históricos (cliente+origen+destino
@@ -422,14 +423,35 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
         <Field label="Odómetro al llegar (km)"><input type="number" placeholder="Ej: 125430" value={f.endKm} onChange={set("endKm")} /></Field>
       </div>
       <Field label="Observaciones"><textarea placeholder="Incidencias, demoras..." value={f.notes} onChange={set("notes")} /></Field>
-      <div className="card" style={{ background: f.tripStatus === "en_curso" ? "#f59e0b11" : "var(--bg3)", border: `1px solid ${f.tripStatus === "en_curso" ? "var(--amber)" : "var(--border)"}`, marginBottom: 12 }}>
-        <div className="flex aic gap10">
-          <ChkBox checked={f.tripStatus === "en_curso"} onChange={() => setF(p => ({ ...p, tripStatus: p.tripStatus === "en_curso" ? "completado" : "en_curso" }))} />
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>🔄 Viaje no concluido</div>
-            <div className="tsm txt2">Actívalo si otro chofer u otra unidad continuará el viaje. Quedará disponible para que alguien lo retome.</div>
-          </div>
+      {/* Pregunta directa en vez de una casilla escondida: es donde se hacían
+          bolas los choferes. Si quedó a medias, se pide DÓNDE lo dejó — sin eso
+          el que lo retoma no sabe de dónde seguir. */}
+      <div className="card" style={{ background: "var(--bg3)", marginBottom: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>¿Terminaste este viaje?</div>
+        <div className="g2 gap8">
+          <button type="button" className="btn" style={{ justifyContent: "center", padding: 12,
+            background: f.tripStatus === "completado" ? "var(--green)" : "var(--bg2)",
+            color: f.tripStatus === "completado" ? "#fff" : "var(--txt)",
+            border: "1px solid " + (f.tripStatus === "completado" ? "var(--green)" : "var(--border)"), fontWeight: 700 }}
+            onClick={() => setF(p => ({ ...p, tripStatus: "completado" }))}>
+            ✅ Sí, ya lo entregué
+          </button>
+          <button type="button" className="btn" style={{ justifyContent: "center", padding: 12,
+            background: f.tripStatus === "en_curso" ? "var(--amber)" : "var(--bg2)",
+            color: f.tripStatus === "en_curso" ? "#000" : "var(--txt)",
+            border: "1px solid " + (f.tripStatus === "en_curso" ? "var(--amber)" : "var(--border)"), fontWeight: 700 }}
+            onClick={() => setF(p => ({ ...p, tripStatus: "en_curso" }))}>
+            🔄 No, quedó a medias
+          </button>
         </div>
+        {f.tripStatus === "en_curso" && (
+          <div className="mt8">
+            <Field label="¿Dónde dejaste la carga o la unidad? *">
+              <input placeholder="Ej: en el patio de Tizayuca / bodega del cliente" value={f.leftAt} onChange={set("leftAt")} />
+            </Field>
+            <div className="tsm txt2">Esto es lo que verá quien lo continúe. El viaje queda en la lista de "a medias" hasta que alguien lo cierre.</div>
+          </div>
+        )}
       </div>
       <div className="card mt12 mb12">
         <div style={{ fontWeight: 700, marginBottom: 12 }}>📷 Comprobantes</div>
@@ -866,32 +888,65 @@ function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructio
       {instant && onUpdateInstant && (
         <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} onGPSTripEnd={onGPSTripEnd} />
       )}
-      {availableRelays && availableRelays.length > 0 && (
-        <div className="mb16">
-          <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes en curso ({availableRelays.length})</div>
-          {availableRelays.map(t => {
-            const v = vehicles.find(x => x.id === t.vehicleId);
-            const isOwn = t.driverId === driver?.id;
-            return (
-              <div key={t.id} className="card mb8" style={{ borderLeft: `3px solid ${isOwn ? "var(--green)" : "var(--amber)"}` }}>
-                <div className="flex aic jb mb6">
-                  <span className={`badge ${isOwn ? "bg" : "ba"}`}>{isOwn ? "✋ Mi viaje" : "🔄 Relevo disponible"}</span>
-                  <span className="tsm txt2">{fmtDate(t.date)}</span>
-                </div>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
-                <div className="tsm txt2 mb8">
-                  {t.client && <span>🤝 {t.client} · </span>}
-                  {v && <span>🚛 {v.plates} · </span>}
-                  {(t.legs || []).length > 0 && <span>{t.legs.length} tramo(s) previo(s)</span>}
-                </div>
-                <button className="btn btn-a btn-sm" onClick={() => onRelay(t)}>
-                  {isOwn ? "✅ Retomar y completar mi viaje" : "🔄 Continuar este viaje"}
-                </button>
+      {/* A medias: primero LOS TUYOS (los que tú dejaste sin cerrar) y aparte
+          los de otros. Cada tarjeta dice DÓNDE quedó y desde cuándo. */}
+      {availableRelays && availableRelays.length > 0 && (() => {
+        const dias = f => { try { return Math.floor((new Date(today()) - new Date(f)) / 86400000); } catch { return 0; } };
+        const ultimoLugar = t => {
+          const legs = t.legs || [];
+          const ult = [...legs].reverse().find(l => l.leftAt);
+          return ult?.leftAt || t.leftAt || "";
+        };
+        const quienDejo = t => {
+          const legs = t.legs || [];
+          return legs.length ? (legs[legs.length - 1].driverName || "otro chofer") : (t.driverName || "el chofer inicial");
+        };
+        const tarjeta = (t, isOwn) => {
+          const v = vehicles.find(x => x.id === t.vehicleId);
+          const d = dias(t.date);
+          const lugar = ultimoLugar(t);
+          return (
+            <div key={t.id} className="card mb8" style={{ borderLeft: `3px solid ${isOwn ? "var(--green)" : "var(--amber)"}` }}>
+              <div className="flex aic jb mb6">
+                <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
+                {d > 0 && <span className={`badge ${d > 2 ? "br" : "ba"}`} style={{ fontSize: 10 }}>{d} día{d > 1 ? "s" : ""}</span>}
               </div>
-            );
-          })}
-        </div>
-      )}
+              <div className="tsm txt2 mb6">
+                {t.client && <span>🤝 {t.client} · </span>}
+                {v && <span>🚛 {v.plates}</span>}
+              </div>
+              <div className="card" style={{ background: "var(--bg3)", padding: 8, marginBottom: 8 }}>
+                <div className="tsm"><strong>📍 Quedó en:</strong> {lugar || <span className="txt2">no lo anotaron — pregunta a {quienDejo(t)}</span>}</div>
+                {!isOwn && <div className="tsm txt2 mt2">Lo dejó {quienDejo(t)}</div>}
+                {(t.legs || []).length > 0 && <div className="tsm txt2 mt2">{t.legs.length} tramo(s) antes del tuyo</div>}
+              </div>
+              <button className="btn btn-a btn-sm" style={{ width: "100%", justifyContent: "center" }} onClick={() => onRelay(t)}>
+                {isOwn ? "✅ Retomar y cerrar mi viaje" : "🔄 Yo lo continúo"}
+              </button>
+            </div>
+          );
+        };
+        const mios = availableRelays.filter(t => t.driverId === driver?.id);
+        const otros = availableRelays.filter(t => t.driverId !== driver?.id);
+        return (
+          <>
+            {mios.length > 0 && (
+              <div className="mb16">
+                <div className="stitle" style={{ color: "var(--green)" }}>✋ Tus viajes a medias ({mios.length})</div>
+                <div className="tsm txt2 mb8">Tú los dejaste sin cerrar. Ciérralos cuando los termines.</div>
+                {mios.map(t => tarjeta(t, true))}
+              </div>
+            )}
+            {otros.length > 0 && (
+              <div className="mb16">
+                <div className="stitle" style={{ color: "var(--amber)" }}>🔄 Viajes que puedes continuar ({otros.length})</div>
+                <div className="tsm txt2 mb8">Otro chofer los dejó a medias. Toma el que vayas a seguir.</div>
+                {otros.map(t => tarjeta(t, false))}
+              </div>
+            )}
+          </>
+        );
+      })()}
       <div className="stitle">Acciones rápidas</div>
       <div className="g2 mb16">
         <div className="card card-click" style={{ borderColor: "#f59e0b44" }} onClick={() => onNav("nuevo")}>
@@ -1069,8 +1124,12 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
     notes: "",
     endKm: "",
     markComplete: true,
+    leftAt: "",
   });
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const legs = trip.legs || [];
+  const ultLeftAt = [...legs].reverse().find(l => l.leftAt)?.leftAt || trip.leftAt || "";
+  const quienDejo = legs.length ? (legs[legs.length - 1].driverName || "otro chofer") : (trip.driverName || "el chofer inicial");
   return (
     <div className="card">
       <div className="stitle mb8">{isOwn ? "✅ Retomar mi viaje" : "🔄 Continuar viaje"}</div>
@@ -1078,7 +1137,18 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
         <div className="tsm txt2 mb2">{isOwn ? "Tu viaje incompleto:" : "Viaje original:"}</div>
         <div style={{ fontWeight: 700 }}>{trip.origin} → {trip.destination}</div>
         <div className="tsm txt2">{fmtDate(trip.date)} · {trip.client}</div>
-        {isOwn && <div className="tsm mt4" style={{ color: "var(--green)" }}>✋ Tú iniciaste este viaje — puedes retomarlo y completarlo.</div>}
+        <div className="mt8" style={{ padding: 8, borderRadius: 6, background: ultLeftAt ? "#22c55e11" : "#ef444411", border: "1px solid " + (ultLeftAt ? "#22c55e44" : "#ef444444") }}>
+          <div className="tsm"><strong>📍 Dónde quedó:</strong> {ultLeftAt || `no lo anotaron — pregúntale a ${quienDejo}`}</div>
+        </div>
+        {/* Quién ha hecho qué: para no repetir tramos ni perderse */}
+        <div className="fcol gap2 mt8">
+          <div className="tsm txt2" style={{ fontWeight: 700 }}>Lo que lleva el viaje:</div>
+          <div className="tsm">1. {trip.driverName || "Chofer inicial"}{trip.departTime ? ` · ${trip.departTime}` : ""} — inició</div>
+          {legs.map((l, i) => (
+            <div key={l.id} className="tsm">{i + 2}. {l.driverName || "Otro chofer"}{l.startTime ? ` · ${l.startTime}` : ""} — {fmtDate(l.date)}{l.leftAt ? ` · dejó en ${l.leftAt}` : ""}</div>
+          ))}
+          <div className="tsm" style={{ color: "var(--amber)" }}>{legs.length + 2}. Tú — ahora</div>
+        </div>
       </div>
       <div className="g2 mb8">
         <Field label="Mi unidad *"><select value={f.vehicleId} onChange={set("vehicleId")}>{av.map(v => <option key={v.id} value={v.id}>{v.plates} — {v.model}</option>)}</select></Field>
@@ -1087,23 +1157,41 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
       <Field label="Hora de inicio (opcional)"><input type="time" value={f.startTime} onChange={set("startTime")} /></Field>
       <Field label="Odómetro al entregar (km)"><input type="number" placeholder="Ej: 128450" value={f.endKm} onChange={set("endKm")} /></Field>
       <Field label="Notas del tramo"><textarea placeholder="Punto de entrega, incidencias..." value={f.notes} onChange={set("notes")} rows={2} /></Field>
-      <div className="card mb12" style={{ background: f.markComplete ? "#22c55e11" : "#f59e0b11", border: `1px solid ${f.markComplete ? "var(--green)" : "var(--amber)"}` }}>
-        <div className="flex aic gap10">
-          <ChkBox checked={f.markComplete} onChange={() => setF(p => ({ ...p, markComplete: !p.markComplete }))} />
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{f.markComplete ? "✅ Marcar viaje como completado" : "🔄 El viaje continúa en curso"}</div>
-            <div className="tsm txt2">{f.markComplete ? "El viaje queda cerrado al guardar." : "Otro chofer podrá retomarlo después."}</div>
-          </div>
+      {/* Misma pregunta que al registrar: dos botones, sin casillas ambiguas */}
+      <div className="card mb12" style={{ background: "var(--bg3)" }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>¿Con tu tramo ya quedó entregado?</div>
+        <div className="g2 gap8">
+          <button type="button" className="btn" style={{ justifyContent: "center", padding: 12, fontWeight: 700,
+            background: f.markComplete ? "var(--green)" : "var(--bg2)", color: f.markComplete ? "#fff" : "var(--txt)",
+            border: "1px solid " + (f.markComplete ? "var(--green)" : "var(--border)") }}
+            onClick={() => setF(p => ({ ...p, markComplete: true }))}>
+            ✅ Sí, ya se entregó
+          </button>
+          <button type="button" className="btn" style={{ justifyContent: "center", padding: 12, fontWeight: 700,
+            background: !f.markComplete ? "var(--amber)" : "var(--bg2)", color: !f.markComplete ? "#000" : "var(--txt)",
+            border: "1px solid " + (!f.markComplete ? "var(--amber)" : "var(--border)") }}
+            onClick={() => setF(p => ({ ...p, markComplete: false }))}>
+            🔄 No, sigue a medias
+          </button>
         </div>
+        {!f.markComplete && (
+          <div className="mt8">
+            <Field label="¿Dónde lo estás dejando tú? *">
+              <input placeholder="Ej: patio de Tizayuca / bodega del cliente" value={f.leftAt} onChange={set("leftAt")} />
+            </Field>
+            <div className="tsm txt2">Sin esto, el siguiente chofer no sabe de dónde seguir.</div>
+          </div>
+        )}
       </div>
       <div className="flex gap8">
         <button className="btn btn-a" style={{ flex: 1, justifyContent: "center" }}
           onClick={() => {
             if (!f.vehicleId) return;
-            const leg = { id: genId(), driverId: currentDriver.id, driverName: currentDriver.name, vehicleId: f.vehicleId, date: f.date, startTime: f.startTime, endKm: f.endKm, notes: f.notes };
+            if (!f.markComplete && !f.leftAt.trim()) { alert("Dinos dónde estás dejando la carga o la unidad."); return; }
+            const leg = { id: genId(), driverId: currentDriver.id, driverName: currentDriver.name, vehicleId: f.vehicleId, date: f.date, startTime: f.startTime, endKm: f.endKm, notes: f.notes, leftAt: f.markComplete ? "" : f.leftAt.trim() };
             onSave(trip.id, { legs: [...(trip.legs || []), leg], tripStatus: f.markComplete ? "completado" : "en_curso" });
           }}>
-          {f.markComplete ? "✅ Guardar y completar" : "🔄 Guardar tramo"}
+          {f.markComplete ? "✅ Guardar y cerrar el viaje" : "🔄 Guardar mi tramo"}
         </button>
         <button className="btn btn-g" onClick={onCancel}>Cancelar</button>
       </div>
