@@ -4686,14 +4686,27 @@ function AdminChecador({ checadas, drivers }) {
     : c.estado === "sin_ubicacion" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin ubicación</span>
     : <span className="badge ba" style={{ fontSize: 10 }}>verificando…</span>;
 
+  // Horas con DESCUENTO DE TRASLADO: si el chofer arrancó (o cerró) con la
+  // unidad fuera de la base, no hizo el traslado casa→oficina que normalmente
+  // hace por su cuenta, así que ese tiempo no cuenta como trabajado.
+  const hm = min => `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, "0")} h`;
   const horas = chs => {
     const ent = chs.find(c => c.tipo === "entrada");
     const sal = [...chs].reverse().find(c => c.tipo === "salida");
     if (!ent || !sal) return null;
     const [h1, m1] = String(ent.hora).slice(11).split(":").map(Number);
     const [h2, m2] = String(sal.hora).slice(11).split(":").map(Number);
-    const dif = (h2 * 60 + m2 - h1 * 60 - m1) / 60;
-    return dif > 0 ? dif.toFixed(1) : null;
+    const brutas = h2 * 60 + m2 - h1 * 60 - m1;
+    if (brutas <= 0) return null;
+    const drv = (drivers || []).find(d => d.id === ent.driverId || d.name === ent.driverName);
+    const traslado = Number(drv?.commuteMin || 0);
+    const notas = [];
+    let desc = 0;
+    if (traslado) {
+      if (ent.estado === "verificada" && !ent.en_base) { desc += traslado; notas.push(`arrancó con la unidad fuera de la base (−${traslado} min)`); }
+      if (sal.estado === "verificada" && !sal.en_base) { desc += traslado; notas.push(`cerró sin regresar la unidad (−${traslado} min)`); }
+    }
+    return { brutas, desc, efectivas: Math.max(0, brutas - desc), notas, hm };
   };
 
   if (!dias.length) return (
@@ -4715,8 +4728,14 @@ function AdminChecador({ checadas, drivers }) {
               <div key={nombre} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
                 <div className="flex aic jb">
                   <span style={{ fontWeight: 700 }}>{nombre}</span>
-                  {h && <span className="tsm" style={{ fontWeight: 700 }}>{h} h</span>}
+                  {h && (
+                    <span className="tsm" style={{ fontWeight: 700 }}>
+                      {hm(h.efectivas)}
+                      {h.desc > 0 && <span className="txt2" style={{ fontWeight: 400 }}> efectivas · de {hm(h.brutas)}</span>}
+                    </span>
+                  )}
                 </div>
+                {h && h.notas.map((n, i) => <div key={i} className="tsm" style={{ color: "var(--amber)" }}>↳ {n}</div>)}
                 <div className="fcol gap2 mt4">
                   {ord.map(c => (
                     <div key={c.id} className="flex aic jb tsm">
