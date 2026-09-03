@@ -766,7 +766,7 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant, onGPSTr
   );
 }
 
-function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
+function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
   const td = today(); const mk = nowMon();
   const my = trips.filter(t => t.driverId === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
@@ -775,11 +775,47 @@ function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructio
   // ── Checador: entrada/salida con ubicación del teléfono. El bot la verifica
   // contra el GPS de las unidades (debe estar a <250 m de una) en minutos.
   const [checando, setChecando] = useState(false);
+  // Verificacion EN EL MOMENTO: la app compara la ubicacion del telefono contra
+  // la posicion de las unidades (el bot la publica en tr:gps_pos). Si no hay
+  // unidad cerca NO se bloquea la checada: se pide el motivo.
+  const [pidiendoMotivo, setPidiendoMotivo] = useState(null);
+  const [motivoTxt, setMotivoTxt] = useState("");
+  const RADIO_OK = 250;
+  const MOTIVOS = ["Voy a recoger la unidad", "Estoy esperando la unidad",
+                   "Dia de oficina / taller", "La unidad la trae otro chofer",
+                   "Estoy en ruta con otra unidad"];
+  const metros = (lat1, lon1, lat2, lon2) => {
+    if (!lat1 || !lat2) return Infinity;
+    const la1 = lat1 / 1e6, lo1 = lon1 / 1e6, la2 = lat2 / 1e6, lo2 = lon2 / 1e6;
+    const dx = (lo2 - lo1) * 111320 * Math.cos((la1 + la2) / 2 * Math.PI / 180);
+    const dy = (la2 - la1) * 110540;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+  const unidadMasCerca = (lat, lon) => {
+    let mejor = null, dm = Infinity;
+    for (const u of (gpsPos?.v || [])) {
+      const d = metros(lat, lon, u.lat, u.lon);
+      if (d < dm) { mejor = u; dm = d; }
+    }
+    return mejor ? { unidad: mejor.unidad, dist: Math.round(dm), lugar: mejor.lugar } : null;
+  };
   const misChecadas = (checadas || []).filter(c => c.driverId === driver.id && c.fecha === td)
     .sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
   const ultEntrada = [...misChecadas].reverse().find(c => c.tipo === "entrada");
   const ultSalida = [...misChecadas].reverse().find(c => c.tipo === "salida");
   const turnoAbierto = ultEntrada && (!ultSalida || String(ultSalida.hora) < String(ultEntrada.hora));
+  const guardarChecada = (base, cerca, motivo) => {
+    onChecar({
+      ...base,
+      unidad: cerca && cerca.dist <= RADIO_OK ? cerca.unidad : "",
+      distancia_m: cerca ? cerca.dist : null,
+      unidad_cercana: cerca ? cerca.unidad : "",
+      motivo: motivo || "",
+      estado: "pendiente",
+    });
+    setPidiendoMotivo(null);
+    setMotivoTxt("");
+  };
   const checar = (tipo) => {
     if (checando) return;
     if (!navigator.geolocation) { alert("Este teléfono no da ubicación; avisa a Alan."); return; }
@@ -788,20 +824,29 @@ function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructio
       pos => {
         const ahora = new Date();
         const hora = `${td} ${String(ahora.getHours()).padStart(2, "0")}:${String(ahora.getMinutes()).padStart(2, "0")}`;
-        onChecar({
+        const lat = Math.round(pos.coords.latitude * 1e6);
+        const lon = Math.round(pos.coords.longitude * 1e6);
+        const base = {
           id: genId(), driverId: driver.id, driverName: driver.name,
-          tipo, fecha: td, hora,
-          lat: Math.round(pos.coords.latitude * 1e6), lon: Math.round(pos.coords.longitude * 1e6),
+          tipo, fecha: td, hora, lat, lon,
           precision_m: Math.round(pos.coords.accuracy || 0),
-          estado: "pendiente", createdAt: ahora.toISOString(),
-        });
+          createdAt: ahora.toISOString(),
+        };
+        const cerca = unidadMasCerca(lat, lon);
         setChecando(false);
+        if (cerca && cerca.dist <= RADIO_OK) {
+          guardarChecada(base, cerca, "");           // junto a la unidad: directo
+        } else {
+          setPidiendoMotivo({ base, cerca });        // sin unidad: pedir motivo
+        }
       },
       err => { alert("No pude obtener tu ubicación (" + err.message + "). Activa el GPS del teléfono e intenta de nuevo."); setChecando(false); },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
     );
   };
-  const badgeChecada = c => c.estado === "verificada"
+  const badgeChecada = c => c.estado === "justificada"
+    ? <span className="badge ba" style={{ fontSize: 10 }}>justificada</span>
+    : c.estado === "verificada"
     ? <span className="badge bg" style={{ fontSize: 10 }}>✓ {c.unidad ? `con ${String(c.unidad).split(" ").pop()}` : "verificada"}</span>
     : c.estado === "sin_unidad" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin unidad cerca</span>
     : c.estado === "sin_ubicacion" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin ubicación</span>
@@ -823,12 +868,49 @@ function ChoferHome({ checadas, onChecar, driver, trips, inspections, instructio
             {checando ? "Obteniendo ubicación…" : "🏁 CHECAR SALIDA"}
           </button>
         )}
+        {pidiendoMotivo && (
+          <div className="card mt8" style={{ background: "#f59e0b11", border: "1px solid var(--amber)" }}>
+            <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ No hay ninguna unidad cerca de ti</div>
+            <div className="tsm txt2 mb8">
+              {pidiendoMotivo.cerca
+                ? `La más cercana (${pidiendoMotivo.cerca.unidad}) está a ${pidiendoMotivo.cerca.dist >= 1000 ? (pidiendoMotivo.cerca.dist / 1000).toFixed(1) + " km" : pidiendoMotivo.cerca.dist + " m"}.`
+                : "El sistema no tiene la posición de las unidades en este momento."}
+              {" "}Sí puedes checar — solo dinos por qué, para que quede claro.
+            </div>
+            <div className="fcol gap4 mb8">
+              {MOTIVOS.map(m => (
+                <button key={m} type="button" className="btn btn-g btn-sm"
+                  style={{ justifyContent: "flex-start", textAlign: "left" }}
+                  onClick={() => guardarChecada(pidiendoMotivo.base, pidiendoMotivo.cerca, m)}>
+                  {m}
+                </button>
+              ))}
+            </div>
+            <Field label="Otro motivo">
+              <input placeholder="Escribe por qué estás checando sin unidad" value={motivoTxt}
+                onChange={e => setMotivoTxt(e.target.value)} />
+            </Field>
+            <div className="flex gap8 mt8">
+              <button className="btn btn-a" style={{ flex: 1, justifyContent: "center" }}
+                disabled={!motivoTxt.trim()}
+                onClick={() => guardarChecada(pidiendoMotivo.base, pidiendoMotivo.cerca, motivoTxt.trim())}>
+                Checar con este motivo
+              </button>
+              <button className="btn btn-g" onClick={() => { setPidiendoMotivo(null); setMotivoTxt(""); }}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
         {misChecadas.length > 0 && (
           <div className="fcol gap4 mt8">
             {misChecadas.map(c => (
-              <div key={c.id} className="flex aic jb tsm">
-                <span>{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
-                {badgeChecada(c)}
+              <div key={c.id} className="fcol gap2">
+                <div className="flex aic jb tsm">
+                  <span>{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
+                  {badgeChecada(c)}
+                </div>
+                {c.motivo && <div className="tsm txt2" style={{ paddingLeft: 4 }}>↳ {c.motivo}</div>}
               </div>
             ))}
           </div>
@@ -1199,7 +1281,7 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
   );
 }
 
-function ChoferApp({ checadas, onChecar, driver, trips, inspections, vehicles, drivers, razones, clients, instructions, instant, statusRequests, onAdd, onUpdate, onAddIns, onAck, onUpdateInstant, onUpdStatusRequest, onLogout }) {
+function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, vehicles, drivers, razones, clients, instructions, instant, statusRequests, onAdd, onUpdate, onAddIns, onAck, onUpdateInstant, onUpdStatusRequest, onLogout }) {
   const [view, setView] = useState("home");
   const [toast, setToast] = useState("");
   const [relayTrip, setRelayTrip] = useState(null);
@@ -1230,7 +1312,7 @@ function ChoferApp({ checadas, onChecar, driver, trips, inspections, vehicles, d
         </div>
       </div>
       {toast && <div className="toast">✓ {toast}</div>}
-      {view === "home" && <ChoferHome checadas={checadas} onChecar={onChecar} driver={driver} trips={trips} inspections={inspections} instructions={instructions}
+      {view === "home" && <ChoferHome checadas={checadas} gpsPos={gpsPos} onChecar={onChecar} driver={driver} trips={trips} inspections={inspections} instructions={instructions}
         availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests}
         onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
         onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest}
@@ -4680,7 +4762,9 @@ function AdminChecador({ checadas, drivers }) {
     return Object.entries(out).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7);
   }, [checadas]);
 
-  const badge = c => c.estado === "verificada"
+  const badge = c => c.estado === "justificada"
+    ? <span className="badge ba" style={{ fontSize: 10 }}>⚠ justificada</span>
+    : c.estado === "verificada"
     ? <span className="badge bg" style={{ fontSize: 10 }}>✓ {c.unidad ? String(c.unidad).split(" ").pop() : "OK"}{c.distancia_m != null ? ` · ${c.distancia_m} m` : ""}{c.en_base ? " · en base" : ""}</span>
     : c.estado === "sin_unidad" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin unidad cerca{c.distancia_m != null ? ` (${c.distancia_m} m)` : ""}</span>
     : c.estado === "sin_ubicacion" ? <span className="badge br" style={{ fontSize: 10 }}>⚠ sin ubicación</span>
@@ -4738,9 +4822,12 @@ function AdminChecador({ checadas, drivers }) {
                 {h && h.notas.map((n, i) => <div key={i} className="tsm" style={{ color: "var(--amber)" }}>↳ {n}</div>)}
                 <div className="fcol gap2 mt4">
                   {ord.map(c => (
-                    <div key={c.id} className="flex aic jb tsm">
-                      <span className="txt2">{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
-                      {badge(c)}
+                    <div key={c.id} className="fcol gap2">
+                      <div className="flex aic jb tsm">
+                        <span className="txt2">{c.tipo === "entrada" ? "✅ Entrada" : "🏁 Salida"} · {String(c.hora).slice(11)}</span>
+                        {badge(c)}
+                      </div>
+                      {c.motivo && <div className="tsm" style={{ color: "var(--amber)", paddingLeft: 4 }}>↳ {c.motivo}</div>}
                     </div>
                   ))}
                 </div>
@@ -5163,6 +5250,7 @@ export default function App() {
   const [gpsKm, setGpsKm] = useState([]);           // foto diaria del GPS (bot)
   const [cargasComb, setCargasComb] = useState([]);  // cargas Edenred (bot)
   const [checadas, setChecadas] = useState([]);       // checador de choferes
+  const [gpsPos, setGpsPos] = useState({ v: [] });    // posicion actual de las unidades (bot)
   const [mantenimientos, setMantenimientos] = useState([]);
 
   useEffect(() => {
@@ -5202,6 +5290,7 @@ export default function App() {
           listen("tr:gps_km", v => setGpsKm(v || []), []),
           listen("tr:cargas_combustible", v => setCargasComb(v || []), []),
           listen("tr:checadas", v => setChecadas(v || []), []),
+          listen("tr:gps_pos", v => setGpsPos(v || { v: [] }), { v: [] }),
           listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
         ];
       } catch (e) { console.error("listeners", e.message); }
@@ -5304,7 +5393,7 @@ export default function App() {
   );
 
   if (role === "chofer") return (
-    <ChoferApp checadas={checadas} onChecar={addChecada} driver={driver} trips={trips} inspections={inspections}
+    <ChoferApp checadas={checadas} gpsPos={gpsPos} onChecar={addChecada} driver={driver} trips={trips} inspections={inspections}
       vehicles={vehicles.filter(v => v.active)} drivers={drivers} razones={razones.filter(r => r.active)}
       clients={clients} instructions={instructions} instant={instant}
       statusRequests={statusRequests.filter(r => r.driverId === driver?.id)}
