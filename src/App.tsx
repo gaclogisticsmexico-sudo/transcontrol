@@ -314,12 +314,25 @@ async function downloadClientZip(client, month, clientTrips) {
 }
 
 
+// Mercancia que se retira un dia y se entrega otro. El retiro queda ABIERTO
+// hasta que alguien dice "ya salio todo": de UN retiro pueden salir VARIAS
+// entregas (cada partida a su destino), y quien sabe como se parte es el
+// coordinador, no el chofer. Por eso el chofer solo marca que la dejo en el
+// patio y el reparto se arma despues.
+const PATIOS = ["MÉRIDA 43", "CHALINO", "CARRILLO PUERTO", "SUR 75 A",
+                "CASA CRIS", "CASA EDGAR", "DEPA URIEL", "OFICINA SINATEL"];
+const retirosAbiertos = trips => (trips || []).filter(t => t.retiro && !t.retiro.cerrado);
+const entregasDe = (trips, id) => (trips || []).filter(t => t.retiroId === id);
+const diasDesde = f => { try { return Math.max(0, Math.floor((new Date(today()) - new Date(f)) / 86400000)); } catch { return 0; } };
+const rotulo = t => `${fmtDate(t.date)} · ${t.client || "sin cliente"} · ${t.origin || "?"}`;
+
 function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, gpsOrigin, gpsDestination, gpsVehicleId, trips, onSave, onCancel }) {
   const [f, setF] = useState({
     date: today(), origin: gpsOrigin || "", destination: gpsDestination || "", departTime: "", arriveTime: "",
     cargo: "general", vehicleId: gpsVehicleId || vehicles[0]?.id || "", driverId: currentDriver?.id || drivers[0]?.id || "",
     client: "", docNum: "", notes: "", razonSocialId: isChofer ? "" : (razones[0]?.id || ""), patioReg: false,
     endKm: "", tripStatus: "completado", leftAt: "",
+    partidas: "", retiroId: "",
     originModified: false, destinationModified: false,
   });
   const [tmpId] = useState(genId);
@@ -336,7 +349,12 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
   const submit = () => {
     if (!f.origin || !f.destination || !f.client || !f.vehicleId) { alert("Completa: Origen, Destino, Cliente y Unidad"); return; }
     if (f.tripStatus === "en_curso" && !f.leftAt.trim()) { alert("Dinos dónde dejaste la carga o la unidad, para que quien lo continúe sepa de dónde seguir."); return; }
-    onSave({ ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", driverName: (currentDriver?.name || drivers.find(d => d.id === f.driverId)?.name || ""), tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() });
+    if (f.tripStatus === "en_patio" && !f.leftAt.trim()) { alert("Dinos en qué patio dejaste la mercancía."); return; }
+    const viaje = { ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", driverName: (currentDriver?.name || drivers.find(d => d.id === f.driverId)?.name || ""), tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() };
+    if (f.tripStatus === "en_patio") {
+      viaje.retiro = { patio: f.leftAt.trim(), partidas: f.partidas ? Number(f.partidas) : null, cerrado: false };
+    }
+    onSave(viaje);
   };
 
   // Rutas frecuentes: minadas de los viajes históricos (cliente+origen+destino
@@ -428,28 +446,69 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
           el que lo retoma no sabe de dónde seguir. */}
       <div className="card" style={{ background: "var(--bg3)", marginBottom: 12 }}>
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>¿Terminaste este viaje?</div>
-        <div className="g2 gap8">
+        <div className="fcol gap8">
           <button type="button" className="btn" style={{ justifyContent: "center", padding: 12,
             background: f.tripStatus === "completado" ? "var(--green)" : "var(--bg2)",
             color: f.tripStatus === "completado" ? "#fff" : "var(--txt)",
             border: "1px solid " + (f.tripStatus === "completado" ? "var(--green)" : "var(--border)"), fontWeight: 700 }}
-            onClick={() => setF(p => ({ ...p, tripStatus: "completado" }))}>
-            ✅ Sí, ya lo entregué
+            onClick={() => setF(p => ({ ...p, tripStatus: "completado", leftAt: "" }))}>
+            ✅ Sí, ya la entregué
+          </button>
+          <button type="button" className="btn" style={{ justifyContent: "center", padding: 12,
+            background: f.tripStatus === "en_patio" ? "var(--amber)" : "var(--bg2)",
+            color: f.tripStatus === "en_patio" ? "#000" : "var(--txt)",
+            border: "1px solid " + (f.tripStatus === "en_patio" ? "var(--amber)" : "var(--border)"), fontWeight: 700 }}
+            onClick={() => setF(p => ({ ...p, tripStatus: "en_patio" }))}>
+            📦 La dejé en el patio — falta entregarla
           </button>
           <button type="button" className="btn" style={{ justifyContent: "center", padding: 12,
             background: f.tripStatus === "en_curso" ? "var(--amber)" : "var(--bg2)",
             color: f.tripStatus === "en_curso" ? "#000" : "var(--txt)",
             border: "1px solid " + (f.tripStatus === "en_curso" ? "var(--amber)" : "var(--border)"), fontWeight: 700 }}
             onClick={() => setF(p => ({ ...p, tripStatus: "en_curso" }))}>
-            🔄 No, quedó a medias
+            🔄 No, quedó a medias — otro lo continúa
           </button>
         </div>
+        {f.tripStatus === "en_patio" && (
+          <div className="mt8">
+            <div className="tsm txt2 mb6">¿En qué patio la dejaste? *</div>
+            <div className="flex gap4 wrap mb8">
+              {PATIOS.map(x => (
+                <button key={x} type="button" className="btn btn-sm"
+                  style={{ background: f.leftAt === x ? "var(--blue)" : "var(--bg2)",
+                           color: f.leftAt === x ? "#fff" : "var(--txt)",
+                           border: "1px solid " + (f.leftAt === x ? "var(--blue)" : "var(--border)") }}
+                  onClick={() => setF(p => ({ ...p, leftAt: x }))}>{x}</button>
+              ))}
+            </div>
+            <Field label="Otro lugar">
+              <input placeholder="Ej: bodega del cliente" value={f.leftAt} onChange={set("leftAt")} />
+            </Field>
+            <Field label="¿Cuántas partidas dejaste? (si lo sabes)">
+              <input type="number" inputMode="numeric" placeholder="Opcional" value={f.partidas} onChange={set("partidas")} />
+            </Field>
+            <div className="tsm txt2">No te preocupes por a dónde va cada una: eso lo arma el coordinador. La mercancía queda en la lista de "falta entregar" hasta que salga toda.</div>
+          </div>
+        )}
         {f.tripStatus === "en_curso" && (
           <div className="mt8">
             <Field label="¿Dónde dejaste la carga o la unidad? *">
               <input placeholder="Ej: en el patio de Tizayuca / bodega del cliente" value={f.leftAt} onChange={set("leftAt")} />
             </Field>
             <div className="tsm txt2">Esto es lo que verá quien lo continúe. El viaje queda en la lista de "a medias" hasta que alguien lo cierre.</div>
+          </div>
+        )}
+        {f.tripStatus !== "en_patio" && retirosAbiertos(trips).length > 0 && (
+          <div className="mt8">
+            <Field label="¿Esta entrega sale de mercancía que ya estaba en el patio?">
+              <select value={f.retiroId} onChange={set("retiroId")}>
+                <option value="">No, es un viaje normal</option>
+                {retirosAbiertos(trips).map(r => (
+                  <option key={r.id} value={r.id}>{rotulo(r)} → dejada en {r.retiro.patio}</option>
+                ))}
+              </select>
+            </Field>
+            <div className="tsm txt2">Si la escoges, este viaje queda enlazado con ese retiro. De un mismo retiro pueden salir varias entregas.</div>
           </div>
         )}
       </div>
@@ -970,6 +1029,29 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
       {instant && onUpdateInstant && (
         <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} onGPSTripEnd={onGPSTripEnd} />
       )}
+      {/* Mercancia esperando en el patio: la ve CUALQUIER chofer, porque la
+          entrega no siempre la hace el que la retiro. */}
+      {retirosAbiertos(trips).length > 0 && (
+        <div className="card mb12" style={{ borderLeft: "3px solid var(--amber)" }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>📦 Mercancía en el patio ({retirosAbiertos(trips).length})</div>
+          {retirosAbiertos(trips).map(r => {
+            const ent = entregasDe(trips, r.id);
+            const d = diasDesde(r.date);
+            return (
+              <div key={r.id} className="card mb8" style={{ background: "var(--bg3)", padding: 10 }}>
+                <div className="flex aic jb mb4">
+                  <div style={{ fontWeight: 700 }}>{r.client || "sin cliente"}</div>
+                  {d > 0 && <span className={`badge ${d > 2 ? "br" : "ba"}`} style={{ fontSize: 10 }}>{d} día{d > 1 ? "s" : ""}</span>}
+                </div>
+                <div className="tsm txt2">Se retiró de {r.origin || "?"} el {fmtDate(r.date)}</div>
+                <div className="tsm txt2">Está en {r.retiro.patio}{r.retiro.partidas ? ` · ${r.retiro.partidas} partidas` : ""}</div>
+                {ent.length > 0 && <div className="tsm" style={{ color: "var(--green)" }}>Ya salieron {ent.length}: {ent.map(x => x.destination).join(", ")}</div>}
+              </div>
+            );
+          })}
+          <div className="tsm txt2">Cuando entregues una, captúrala como viaje normal y escógela en "¿esta entrega sale del patio?".</div>
+        </div>
+      )}
       {/* A medias: primero LOS TUYOS (los que tú dejaste sin cerrar) y aparte
           los de otros. Cada tarjeta dice DÓNDE quedó y desde cuándo. */}
       {availableRelays && availableRelays.length > 0 && (() => {
@@ -1291,6 +1373,8 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack).length;
   // Trips in progress available to continue — includes own trips AND others'
   // Excludes trips where this driver already added a relay leg
+  // OJO: solo "en_curso" (relevo de chofer). Un retiro ("en_patio") NO se
+  // continua con un tramo: se cierra con una o varias entregas aparte.
   const availableRelays = trips.filter(t =>
     t.tripStatus === "en_curso" &&
     !(t.legs || []).find(l => l.driverId === driver?.id)
@@ -2599,6 +2683,77 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
   );
 }
 
+// Panel del coordinador: un retiro puede repartirse en VARIAS entregas (cada
+// partida a su destino) y solo el coordinador sabe como se parte. Aqui las
+// enlaza y cierra el retiro cuando ya salio todo.
+function PatioPanel({ trips, vehicles, onUpdate }) {
+  const [enlazando, setEnlazando] = useState({});
+  const abiertos = retirosAbiertos(trips);
+  if (!abiertos.length) return null;
+  const cerrar = r => onUpdate(r.id, { retiro: { ...r.retiro, cerrado: true, cerradoAt: new Date().toISOString() } });
+  const partidas = (r, n) => onUpdate(r.id, { retiro: { ...r.retiro, partidas: n ? Number(n) : null } });
+  return (
+    <div className="card mb12" style={{ borderLeft: "3px solid var(--amber)" }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>📦 Mercancía en el patio ({abiertos.length})</div>
+      <div className="tsm txt2 mb8">Retiros que todavía no salen completos. Enlaza cada entrega con su retiro para que el cruce contra el GPS cuadre.</div>
+      {abiertos.map(r => {
+        const ent = entregasDe(trips, r.id);
+        const d = diasDesde(r.date);
+        const v = (vehicles || []).find(x => x.id === r.vehicleId);
+        // Candidatas: viajes posteriores, sin retiro asignado, que salen de ese patio
+        // o son del mismo cliente. Se propone, decide el coordinador.
+        const cand = (trips || []).filter(t => t.id !== r.id && !t.retiroId && !t.retiro &&
+          t.date >= r.date &&
+          (String(t.client || "").trim().toLowerCase() === String(r.client || "").trim().toLowerCase() ||
+           String(t.origin || "").trim().toLowerCase().includes(String(r.retiro.patio || "").trim().toLowerCase())))
+          .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 25);
+        return (
+          <div key={r.id} className="card mb8" style={{ background: "var(--bg3)", padding: 10 }}>
+            <div className="flex aic jb mb4 wrap gap4">
+              <div style={{ fontWeight: 700 }}>{r.client || "sin cliente"} · se retiró de {r.origin || "?"}</div>
+              <span className={`badge ${d > 2 ? "br" : "ba"}`} style={{ fontSize: 10 }}>{d === 0 ? "hoy" : `${d} día${d > 1 ? "s" : ""} en patio`}</span>
+            </div>
+            <div className="tsm txt2 mb6">
+              {fmtDate(r.date)} · en {r.retiro.patio}
+              {v && <span> · 🚛 {v.plates}</span>}
+              {r.driverName && <span> · 🧑‍✈️ {r.driverName}</span>}
+            </div>
+            <div className="flex aic gap8 mb6 wrap">
+              <span className="tsm txt2">Partidas:</span>
+              <input type="number" inputMode="numeric" placeholder="?" defaultValue={r.retiro.partidas || ""}
+                style={{ width: 70 }} onBlur={e => partidas(r, e.target.value)} />
+              <span className="tsm txt2">Entregadas: {ent.length}</span>
+            </div>
+            {ent.length > 0 && (
+              <div className="fcol gap3 mb6">
+                {ent.map(x => (
+                  <div key={x.id} className="flex aic gap6 tsm">
+                    <span>🏁</span>
+                    <span style={{ fontWeight: 600 }}>{x.destination}</span>
+                    <span className="txt2">· {fmtDate(x.date)}</span>
+                    <button className="btn btn-g btn-sm" style={{ fontSize: 10 }}
+                      onClick={() => onUpdate(x.id, { retiroId: "" })}>quitar</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap8 wrap aic">
+              <select value={enlazando[r.id] || ""} style={{ flex: 1, minWidth: 200 }}
+                onChange={e => setEnlazando(p => ({ ...p, [r.id]: e.target.value }))}>
+                <option value="">Enlazar una entrega de este retiro...</option>
+                {cand.map(t => <option key={t.id} value={t.id}>{fmtDate(t.date)} · {t.origin} → {t.destination}</option>)}
+              </select>
+              <button className="btn btn-a btn-sm" disabled={!enlazando[r.id]}
+                onClick={() => { onUpdate(enlazando[r.id], { retiroId: r.id }); setEnlazando(p => ({ ...p, [r.id]: "" })); }}>Enlazar</button>
+              <button className="btn btn-gr btn-sm" onClick={() => cerrar(r)}>✓ Ya salió todo</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd, tarifario, onUpsertTarifa }) {
   // $/km real por placa (cargas Edenred 30 dias / km GPS 30 dias); si una unidad
   // no tiene cargas, se usa el promedio de la flota. Sirve para estimar el
@@ -2653,6 +2808,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
   return (
     <div className="ap">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>Registro de Viajes</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Nuevo</button></div>
+      <PatioPanel trips={trips} vehicles={vehicles} onUpdate={onUpdate} />
       {showForm && (
         <div className="card mb16">
           <div className="flex aic jb mb12"><span style={{ fontWeight: 700 }}>Registrar Viaje</span><button className="btn btn-g btn-sm" onClick={() => setShowForm(false)}>✕</button></div>
@@ -2703,6 +2859,9 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
                     <CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} mp={t.metodoPago} />
                     <RSBadge id={t.razonSocialId} razones={razones} />
                     {t.tripStatus === "en_curso" && <span className="badge br">🔄 En curso</span>}
+                    {t.retiro && !t.retiro.cerrado && <span className="badge ba">📦 En patio</span>}
+                    {t.retiro && t.retiro.cerrado && <span className="badge bg">📦 Retiro cerrado</span>}
+                    {t.retiroId && <span className="badge bgr">📦 Entrega de un retiro</span>}
                     {legs.length > 0 && <span className="badge ba">🔄 {legs.length + 1} tramos</span>}
                     {t.paymentMethod && <span className="badge bgr">{t.paymentMethod === "efectivo" ? "💵" : "🏦"} {t.paymentMethod}</span>}
                   </div>
