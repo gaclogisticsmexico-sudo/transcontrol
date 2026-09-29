@@ -314,13 +314,20 @@ function PhotoBtn({ label, photoKey, compact = false, onLoad }) {
   const [ph, setPh] = useState(null);
   const [show, setShow] = useState(false);
   const ref = useRef();
+  // Al montar solo se MUESTRA lo que ya existe. onLoad NO se dispara aquí: antes
+  // volvía a marcar pagado (y movía paidDate) cada vez que se abría la tarjeta,
+  // e impedía "Revertir pago". onLoad = el usuario acaba de subir un archivo.
   useEffect(() => {
-    (async () => { const r = await ldPh(photoKey[0], photoKey[1]); if (r) { setPh(r); if (onLoad) onLoad(r); } })();
+    (async () => { const r = await ldPh(photoKey[0], photoKey[1]); if (r) setPh(r); })();
   }, []);
   const [drag, setDrag] = useState(false);
   const doUpload = async f => {
     if (!f) return;
-    try { const b64 = await readB64(f); await svPh(photoKey[0], photoKey[1], b64); setPh(b64); if (onLoad) onLoad(b64); } catch {}
+    try {
+      const b64 = await readB64(f);
+      if (!(await svPh(photoKey[0], photoKey[1], b64))) return;   // no se guardó: no se marca nada
+      setPh(b64); if (onLoad) onLoad(b64);
+    } catch (e) { alert("No se pudo leer el archivo: " + (e?.message || e)); }
   };
   const upload = e => doUpload(e.target.files[0]);
   const onDrop = e => { e.preventDefault(); setDrag(false); doUpload(e.dataTransfer.files[0]); };
@@ -2560,6 +2567,7 @@ function BillingPanel({ trip, onUpdate }) {
               <PhotoBtn label="Subir factura PDF" photoKey={[trip.id, "invoice"]} compact
                 onLoad={() => setPendingMethod(true)} />
               <div className="tsm txt2 mt6">Al subir el PDF se pedirá seleccionar PPD o PUE.</div>
+              <button className="btn btn-g btn-sm mt6" onClick={() => setPendingMethod(true)}>Ya está facturado → elegir PPD/PUE</button>
             </div>
           )}
 
