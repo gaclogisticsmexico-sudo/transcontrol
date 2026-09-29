@@ -47,8 +47,19 @@ const DEF_RS = [
 
 const fmt$ = v => "$" + Number(v || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = s => s ? new Date(s + "T12:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "-";
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
-const nowMon = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+// Fechas SIEMPRE en hora de la Ciudad de México. toISOString() es UTC: después
+// de las 18:00 ya marcaba el día siguiente.
+const FMT_MX = (() => { try { return new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", year: "numeric", month: "2-digit", day: "2-digit" }); } catch { return null; } })();
+const ymdMX = (d = new Date()) => {
+  if (FMT_MX) { const p = {}; for (const x of FMT_MX.formatToParts(d)) p[x.type] = x.value; return `${p.year}-${p.month}-${p.day}`; }
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+const today = () => ymdMX();
+const nowMon = () => ymdMX().slice(0, 7);
+const haceDias = n => ymdMX(new Date(Date.now() - n * 864e5));   // n<0 = días hacia adelante
+// Mes "YYYY-MM" de hace n meses. Se ancla al día 1: con setMonth sobre el día 31
+// se repetían meses (31-oct menos 1 mes = 1-oct).
+const mesMenos = n => { const [y, m] = nowMon().split("-").map(Number); const d = new Date(y, m - 1 - n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 const daysSince = s => s ? Math.floor((Date.now() - new Date(s + "T12:00:00").getTime()) / 864e5) : null;
 const readB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
 // ═══════════════════════════════════════════════════════════════
@@ -2245,8 +2256,7 @@ function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
   if (expenses && expenses.length) {
     const avgBycat = {};
     for (let i = 1; i <= 3; i++) {
-      const d = new Date(); d.setMonth(d.getMonth() - i);
-      const pm = d.toISOString().slice(0, 7);
+      const pm = mesMenos(i);
       expenses.filter(e => e.month === pm).forEach(e => {
         avgBycat[e.cat] = (avgBycat[e.cat] || 0) + e.amount / 3;
       });
@@ -2296,8 +2306,8 @@ function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
 function TrendChart({ trips, expenses, outsourced, selRS }) {
   const data = [];
   for (let i=5; i>=0; i--) {
-    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-i);
-    const mk = d.toISOString().slice(0,7);
+    const mk = mesMenos(i);
+    const d = new Date(mk + "-15T12:00:00");
     const lbl = d.toLocaleDateString("es-MX",{month:"short",year:"2-digit"});
     const ft = trips.filter(t => t.date.startsWith(mk) && (selRS==="all"||t.razonSocialId===selRS));
     const fo = outsourced.filter(o => o.date.startsWith(mk) && (selRS==="all"||o.razonSocialId===selRS));
@@ -2369,7 +2379,7 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
 
   // Driver activity
   const todayStr = today();
-  const yest = (() => { const d = new Date(); d.setDate(d.getDate()-1); return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-'); })();
+  const yest = haceDias(1);
   const driversToday = new Set(trips.filter(t=>t.date===todayStr).map(t=>t.driverId));
   const driversYest = new Set(trips.filter(t=>t.date===yest).map(t=>t.driverId));
   const lastTripDate = d => trips.filter(t=>t.driverId===d.id).sort((a,b)=>b.date.localeCompare(a.date))[0]?.date || null;
@@ -3055,7 +3065,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
   // diesel de cada viaje con sus km reales (t.gpsKm, lo escribe el bot).
   const costoKm = useMemo(() => {
     const pn = x => String(x || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    const hace30 = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+    const hace30 = haceDias(30);
     const por = {};
     for (const e of gpsKm || []) {
       if (e.fecha < hace30) continue;
@@ -4166,8 +4176,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
   const pct = total > 0 ? Math.round((completos.length / total) * 100) : 100;
   const months = [];
   for (let i = 0; i < 24; i++) {
-    const d = new Date(); d.setMonth(d.getMonth() - i);
-    months.push([d.getFullYear(), String(d.getMonth()+1).padStart(2,'0')].join('-'));
+    months.push(mesMenos(i));
   }
 
   const tripRow = t => (
@@ -4349,15 +4358,15 @@ function AdminForecast({ trips, outsourced, expenses }) {
   for (let w = 0; w < 8; w++) {
     const wStart = new Date(); wStart.setDate(wStart.getDate() + w * 7);
     const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 7);
-    const startStr = wStart.toISOString().slice(0, 10);
-    const endStr = wEnd.toISOString().slice(0, 10);
+    const startStr = haceDias(-w * 7);
+    const endStr = haceDias(-(w * 7 + 7));
     const lbl = wStart.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
     // Expected collections: invoiced trips, using configured payment terms
     const cobros = trips.filter(t => {
       if ((t.billingStatus || "sin_facturar") !== "facturado" || !t.amount) return false;
       const estPay = new Date(t.date + "T12:00:00");
       estPay.setDate(estPay.getDate() + terms);
-      const est = estPay.toISOString().slice(0, 10);
+      const est = ymdMX(estPay);
       return est >= startStr && est < endStr;
     }).reduce((s, t) => s + t.amount, 0);
     // Sin facturar (optimistic — might collect if invoiced now)
@@ -4365,7 +4374,7 @@ function AdminForecast({ trips, outsourced, expenses }) {
       if ((t.billingStatus || "sin_facturar") !== "sin_facturar" || !t.amount) return false;
       const estPay = new Date(t.date + "T12:00:00");
       estPay.setDate(estPay.getDate() + terms + 15);
-      const est = estPay.toISOString().slice(0, 10);
+      const est = ymdMX(estPay);
       return est >= startStr && est < endStr;
     }).reduce((s, t) => s + t.amount, 0) : 0;
     // Expected payments: outsourced with due dates
@@ -4446,8 +4455,7 @@ function AdminGastosAnalisis({ trips, expenses, outsourced }) {
   const [months3] = useState(() => {
     const ms = [];
     for (let i = 0; i < 6; i++) {
-      const d = new Date(); d.setMonth(d.getMonth() - i);
-      ms.push(d.toISOString().slice(0, 7));
+      ms.push(mesMenos(i));
     }
     return ms;
   });
@@ -5356,7 +5364,7 @@ function AdminFlota({ gpsKm, cargasComb, mantenimientos, vehicles, expenses, tri
   const plateNorm = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const mesActual = nowMon();
   const hoy = today();
-  const hace = d => { const x = new Date(); x.setDate(x.getDate() - d); return x.toISOString().slice(0, 10); };
+  const hace = d => haceDias(d);
 
   // Por unidad del GPS: hoy / 7 días / mes, odómetro y última posición
   const unidades = useMemo(() => {
