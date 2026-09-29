@@ -4678,9 +4678,9 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
                               <td><span className={`badge ${o.paid ? "bg" : venc ? "br" : "ba"}`}>{o.paid ? "✓ Pagado" : venc ? `Vencido ${dias}d` : "Pendiente"}</span></td>
                               <td className="tsm txt2">{o.dueDate ? fmtDate(o.dueDate) : "—"}</td>
                               <td>{!o.paid ? (
-                                <button className="btn btn-gr btn-sm" onClick={() => onUpdate(o.id, { paid: true, paidDate: today() })}>✓ Pagar</button>
+                                <button className="btn btn-gr btn-sm" onClick={() => onUpdateOut(o.id, { paid: true, paidDate: today() })}>✓ Pagar</button>
                               ) : (
-                                <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)", fontSize: 11 }} onClick={() => onUpdate(o.id, { paid: false, paidDate: null })}>↩</button>
+                                <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)", fontSize: 11 }} onClick={() => onUpdateOut(o.id, { paid: false, paidDate: null })}>↩</button>
                               )}</td>
                             </tr>
                           );
