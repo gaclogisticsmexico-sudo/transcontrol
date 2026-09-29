@@ -2196,7 +2196,7 @@ function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
   if (vFallas.length) alerts.push({ type: "red", msg: `${vFallas.length} unidad(es) con falla activa: ${vFallas.map(v=>v.plates).join(", ")}` });
   const vSinIns = vehicles.filter(v=>v.active).filter(v => { const li = inspections.filter(i=>i.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date))[0]; return !li || daysSince(li.date)>30; });
   if (vSinIns.length) alerts.push({ type: "warn", msg: `${vSinIns.length} unidad(es) sin inspección >30 días: ${vSinIns.map(v=>v.plates).join(", ")}` });
-  const sinFactMes = trips.filter(t => t.date.startsWith(mk) && (t.billingStatus||"sin_facturar")==="sin_facturar" && t.amount > 0);
+  const sinFactMes = trips.filter(t => t.date.startsWith(mk) && (t.billingStatus||"sin_facturar")==="sin_facturar" && !t.sinFactura && t.amount > 0);
   if (sinFactMes.length) alerts.push({ type: "warn", msg: `${sinFactMes.length} servicio(s) del mes sin facturar` });
 
   // ── Anomaly detection: compare current month expenses to 3-month average ──
@@ -2542,10 +2542,14 @@ function ivaTotal(base, sinFactura, retention) {
 
 // Total a cobrar de un servicio. Si trae varias facturas con retención mixta,
 // el total real viene de Facturama (invoiceTotal) y ese manda.
+// Efectivo = sin factura: la bandera sinFactura o el estado "sin_factura" (el
+// bot usa la misma regla). Así un viaje en efectivo nunca suma IVA.
+const esSinFactura = t => !!(t?.sinFactura || t?.billingStatus === "sin_factura");
 function totalTrip(t) {
   if (!t) return 0;
-  if (t.amount && !t.sinFactura && t.invoiceTotal) return Number(t.invoiceTotal) || 0;
-  return ivaTotal(t.amount, t.sinFactura, t.ivaRetention);
+  const sf = esSinFactura(t);
+  if (t.amount && !sf && t.invoiceTotal) return Number(t.invoiceTotal) || 0;
+  return ivaTotal(Number(t.amount) || 0, sf, t.ivaRetention);
 }
 
 function IVACalc({ base, sinFactura, retention, label = "Total a cobrar" }) {
@@ -2593,9 +2597,14 @@ function BillingPanel({ trip, onUpdate }) {
   const bs = trip.billingStatus || "sin_facturar";
   const mp = trip.metodoPago || "";
   const selectMethod = method => {
-    save({ billingStatus: "facturado", metodoPago: method, ...(invNum ? { invoiceNumber: invNum } : {}) });
+    save({ billingStatus: "facturado", metodoPago: method, sinFactura: false, ...(invNum ? { invoiceNumber: invNum } : {}) });
     setPendingMethod(false);
   };
+  const sinFacturaAct = esSinFactura(trip);
+  const noFacturado = bs === "sin_facturar" || bs === "sin_factura";
+  // Revertir un pago: si era efectivo regresa a "pendiente de pago (efectivo)",
+  // si no, a "facturado" (con su PPD/PUE si lo tenía).
+  const eraEfectivo = !!trip.sinFactura || (!mp && trip.paymentMethod === "efectivo");
   return (
     <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 6, padding: 14, marginTop: 8 }}>
       <div className="stitle" style={{ fontSize: 15, marginBottom: 10 }}>💰 Cobranza y facturación SAT</div>
@@ -2603,10 +2612,12 @@ function BillingPanel({ trip, onUpdate }) {
       {/* IVA breakdown */}
       {trip.amount > 0 && (
         <div className="mb12">
-          <IVAToggles sinFactura={trip.sinFactura} retention={trip.ivaRetention}
-            onToggleSF={() => save({ sinFactura: !trip.sinFactura, ivaRetention: false })}
+          <IVAToggles sinFactura={sinFacturaAct} retention={trip.ivaRetention}
+            onToggleSF={() => save({ sinFactura: !sinFacturaAct, ivaRetention: false,
+              // mientras no esté facturado, el estado sigue a la bandera (y al revés)
+              ...(noFacturado ? { billingStatus: !sinFacturaAct ? "sin_factura" : "sin_facturar" } : {}) })}
             onToggleRet={() => save({ ivaRetention: !trip.ivaRetention })} />
-          <IVACalc base={trip.amount} sinFactura={trip.sinFactura} retention={trip.ivaRetention} label="Total a cobrar" />
+          <IVACalc base={trip.amount} sinFactura={sinFacturaAct} retention={trip.ivaRetention} label="Total a cobrar" />
         </div>
       )}
 
@@ -2616,7 +2627,11 @@ function BillingPanel({ trip, onUpdate }) {
           const pm = e.target.value;
           const patch = { paymentMethod: pm };
           // Efectivo => no se factura (pendiente de pago); otra forma => por facturar. Solo si aún no está facturado/pagado.
-          if (bs === "sin_facturar" || bs === "sin_factura") patch.billingStatus = pm === "efectivo" ? "sin_factura" : "sin_facturar";
+          if (bs === "sin_facturar" || bs === "sin_factura") {
+            patch.billingStatus = pm === "efectivo" ? "sin_factura" : "sin_facturar";
+            patch.sinFactura = pm === "efectivo";
+            if (pm === "efectivo") patch.ivaRetention = false;
+          }
           save(patch);
         }}>
           <option value="">Sin definir</option>
@@ -2668,8 +2683,26 @@ function BillingPanel({ trip, onUpdate }) {
           )}
 
           <div className="flex gap4 wrap">
-            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura" })}>💵 Sin factura / Efectivo</button>
-            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), paymentMethod: "efectivo", sinFactura: true })}>✓ Pagado en efectivo</button>
+            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura", sinFactura: true, ivaRetention: false })}>💵 Sin factura / Efectivo</button>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), paymentMethod: "efectivo", sinFactura: true, ivaRetention: false })}>✓ Pagado en efectivo</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── FACTURADO sin PPD/PUE: antes no mostraba ningún botón (callejón sin salida) ── */}
+      {bs === "facturado" && !mp && (
+        <div className="fcol gap8">
+          <div className="card" style={{ background: "#f59e0b0a", border: "1px solid var(--amber)" }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>🧾 Facturado — falta el método de pago SAT</div>
+            <div className="tsm txt2 mb8">Elige PPD o PUE según el CFDI emitido, o márcalo pagado si ya cobraste.</div>
+            <div className="flex gap8 wrap">
+              <button className="btn btn-a btn-sm" onClick={() => selectMethod("PPD")}>📋 PPD — pago diferido</button>
+              <button className="btn btn-b btn-sm" onClick={() => selectMethod("PUE")}>💳 PUE — una exhibición</button>
+            </div>
+          </div>
+          <div className="flex gap4 wrap">
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today() })}>✓ Marcar pagado</button>
+            <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
           </div>
         </div>
       )}
@@ -2719,7 +2752,9 @@ function BillingPanel({ trip, onUpdate }) {
             {trip.paidDate && <div className="tsm txt2">Fecha: {fmtDate(trip.paidDate)}</div>}
           </div>
           <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}
-            onClick={() => save({ billingStatus: "facturado", paidDate: null })}>↩ Revertir pago</button>
+            onClick={() => save(eraEfectivo ? { billingStatus: "sin_factura", sinFactura: true, paidDate: null } : { billingStatus: "facturado", paidDate: null })}>
+            ↩ Revertir pago{eraEfectivo ? " (vuelve a efectivo pendiente)" : ""}
+          </button>
         </div>
       )}
 
@@ -2763,7 +2798,7 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
   const [extras, setExtras] = useState(t.amountExtras || []);
   const [newDesc, setNewDesc] = useState("");
   const [newAmt, setNewAmt] = useState("");
-  const [sinFact, setSinFact] = useState(!!t.sinFactura);
+  const [sinFact, setSinFact] = useState(esSinFactura(t));
   const [ret, setRet] = useState(!!t.ivaRetention);
   const [saveTar, setSaveTar] = useState(true);
   const baseNum = parseFloat(base) || 0;
@@ -2777,7 +2812,9 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
   };
   const save = () => {
     if (total <= 0) return;
-    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+    const bs0 = t.billingStatus || "sin_facturar";
+    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret,
+      ...((bs0 === "sin_facturar" || bs0 === "sin_factura") ? { billingStatus: sinFact ? "sin_factura" : "sin_facturar" } : {}) });
     if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
       onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
     onDone && onDone();
@@ -3962,7 +3999,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
   const [extras, setExtras] = useState(t.amountExtras || (suggestion?.extras) || []);
   const [newDesc, setNewDesc] = useState("");
   const [newAmt, setNewAmt] = useState("");
-  const [sinFact, setSinFact] = useState(!!t.sinFactura);
+  const [sinFact, setSinFact] = useState(esSinFactura(t));
   const [ret, setRet] = useState(!!t.ivaRetention);
   const [expanded, setExpanded] = useState(false);
   const [saveTar, setSaveTar] = useState(true);
@@ -3977,7 +4014,9 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
   };
   const save = () => {
     if (total <= 0) return;
-    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret });
+    const bs0 = t.billingStatus || "sin_facturar";
+    onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret,
+      ...((bs0 === "sin_facturar" || bs0 === "sin_factura") ? { billingStatus: sinFact ? "sin_factura" : "sin_facturar" } : {}) });
     if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
       onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
     setExpanded(false);
@@ -4068,12 +4107,16 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
   const bs = t => t.billingStatus || "sin_facturar";
   const isPast = mk === "__past" || (mk !== "__all" && mk < curMon);
 
-  // Five billing buckets
-  const sinMonto   = ft.filter(t => (!t.amount || t.amount <= 0) && bs(t) === "sin_facturar");
-  const sinFacturar= ft.filter(t => (t.amount > 0) && bs(t) === "sin_facturar");
-  const porCobrar  = ft.filter(t => bs(t) === "facturado");
-  const sinCompl   = ft.filter(t => bs(t) === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido);
-  const completos  = ft.filter(t => bs(t) === "pagado" && (t.metodoPago !== "PPD" || t.complementoSubido));
+  // Buckets: cada viaje cae en UNO solo. "Sin monto" no depende del estado de
+  // cobro (un viaje con monto 0 está sin monto aunque diga facturado).
+  const conMonto   = t => Number(t.amount) > 0;
+  const efectivo   = t => bs(t) === "sin_factura" || (bs(t) === "sin_facturar" && !!t.sinFactura);
+  const sinMonto   = ft.filter(t => !conMonto(t));
+  const sinFacturar= ft.filter(t => conMonto(t) && bs(t) === "sin_facturar" && !t.sinFactura);
+  const efectPend  = ft.filter(t => conMonto(t) && efectivo(t));
+  const porCobrar  = ft.filter(t => conMonto(t) && bs(t) === "facturado");
+  const sinCompl   = ft.filter(t => conMonto(t) && bs(t) === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido);
+  const completos  = ft.filter(t => conMonto(t) && ((bs(t) === "pagado" && (t.metodoPago !== "PPD" || t.complementoSubido)) || bs(t) === "complemento"));
   const tercPend   = fo.filter(o => !o.paid);
 
   // Progress — sinMonto counts as step 0
@@ -4190,6 +4233,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
           {[
             ["Sin monto", sinMonto.length, "var(--txt2)"],
             ["Sin facturar", sinFacturar.length, "var(--txt2)"],
+            ["Efectivo pdte.", efectPend.length, "var(--cyan)"],
             ["Por cobrar", porCobrar.length, "var(--amber)"],
             ["Pdte. complemento", sinCompl.length, "var(--blue)"],
             ["Completados", completos.length, "var(--green)"],
@@ -4216,6 +4260,14 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         items={sinFacturar}
         total={sinFacturar.reduce((s, t) => s + totalTrip(t), 0)}
         emptyMsg="Todos los servicios con monto tienen factura"
+        renderItem={tripRow}
+      />
+      <PendingSection
+        title="Efectivo (sin factura) · pendiente de cobro"
+        color="bb" icon="💵"
+        items={efectPend}
+        total={efectPend.reduce((s, t) => s + totalTrip(t), 0)}
+        emptyMsg="No hay cobros en efectivo pendientes"
         renderItem={tripRow}
       />
       <PendingSection
@@ -5441,7 +5493,7 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
 
   // Pendientes operativos (foco del día)
   const sinMonto = trips.filter(t => !(t.amount > 0)).length;
-  const porFacturar = trips.filter(t => (t.amount || 0) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar");
+  const porFacturar = trips.filter(t => (t.amount || 0) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar" && !t.sinFactura);
   const ppdSinComp = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado").length;
   const tercSinPagar = outsourced.filter(o => !o.paid && (o.providerAmount || 0) > 0);
   const margenTerc = mo.reduce((s, o) => s + (o.clientAmount || 0) - (o.providerAmount || 0), 0);
