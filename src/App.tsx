@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { initializeFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
@@ -75,7 +75,9 @@ const USUARIOS = {
 
 // Firebase — solo Firestore y Auth (no se necesita Storage)
 const fbApp = initializeApp(FIREBASE_CONFIG);
-const db = getFirestore(fbApp);
+// ignoreUndefinedProperties: un campo "undefined" (p. ej. placa sin unidad) ya no
+// tumba la escritura completa; simplemente no se guarda ese campo.
+const db = initializeFirestore(fbApp, { ignoreUndefinedProperties: true });
 const auth = getAuth(fbApp);
 const sk = k => k.replace(/[:.]/g, "_");
 
@@ -103,22 +105,84 @@ async function compressImg(dataUrl, maxDim = 1200, quality = 0.75) {
 async function ld(k, d) {
   try { const s = await getDoc(doc(db, "tc", sk(k))); return s.exists() ? s.data().v : d; } catch { return d; }
 }
-async function sv(k, v) {
-  try { await setDoc(doc(db, "tc", sk(k)), { v, t: Date.now() }); } catch(e) { console.error("sv:", k, e.message); }
+// ─── Escritura segura ─────────────────────────────────────────────────────
+// Antes cada guardado hacía setDoc del arreglo COMPLETO que tenía el teléfono:
+// si esa copia estaba vieja (teléfono dormido, sin señal) borraba lo que había
+// escrito el bot u otra persona. Ahora TODA escritura va en una transacción:
+// se lee el documento fresco, se aplica el cambio por id sobre esa copia y se
+// escribe. Si falla, se avisa en pantalla (antes solo quedaba en la consola).
+const avisoError = (k, e) => {
+  console.error("tx:", k, e?.message || e);
+  alert(`⚠️ NO SE GUARDÓ el cambio (${String(k).replace("tr:", "")}).\n${e?.message || e}\n\nRevisa tu conexión y vuelve a intentarlo.`);
+};
+async function txDoc(k, fn, def) {
+  const ref = doc(db, "tc", sk(k));
+  try {
+    return await runTransaction(db, async tx => {
+      const s = await tx.get(ref);
+      const cur = s.exists() && s.data().v != null ? s.data().v : def;
+      const next = fn(cur);
+      tx.set(ref, { v: next, t: Date.now() });
+      return next;
+    });
+  } catch (e) { avisoError(k, e); return null; }
+}
+// Cambio por id sobre la copia fresca. El patch puede ser una función
+// (item fresco → campos) para cosas como agregar un tramo sin pisar los del bot.
+const upd = (arr, id, p) => {
+  if (!(arr || []).some(x => x.id === id)) throw new Error("Ese registro ya no existe (alguien más lo borró).");
+  return arr.map(x => x.id === id ? { ...x, ...(typeof p === "function" ? p(x) : p) } : x);
+};
+const J = x => JSON.stringify(x);
+// Mezcla de 3 vías: sobre lo fresco del servidor aplica SOLO lo que cambió el
+// usuario respecto a lo que veía (base → next).
+function merge3(base, next, fresh) {
+  const isObj = x => x && typeof x === "object" && !Array.isArray(x);
+  if (Array.isArray(base) && Array.isArray(next) && Array.isArray(fresh) && [...base, ...next].every(x => x === null || typeof x !== "object")) {
+    const add = next.filter(x => !base.includes(x)), rem = base.filter(x => !next.includes(x));
+    return [...fresh.filter(x => !rem.includes(x)), ...add.filter(x => !fresh.includes(x))];
+  }
+  if (isObj(base) && isObj(next) && isObj(fresh)) {
+    const out = { ...fresh };
+    for (const k of new Set([...Object.keys(base), ...Object.keys(next)])) {
+      if (J(base[k]) === J(next[k])) continue;
+      if (!(k in next)) delete out[k]; else out[k] = merge3(base[k], next[k], fresh[k]);
+    }
+    return out;
+  }
+  return next;
+}
+// Guardar un catálogo completo (vehículos, clientes...): se mezcla por id. Lo que
+// no venga en la copia local NO se borra; solo se borran los ids pedidos.
+function mergeById(base, next, fresh, removeIds = []) {
+  const rm = new Set(removeIds || []);
+  const b = new Map((base || []).map(x => [x.id, x]));
+  const out = (fresh || []).filter(x => !rm.has(x.id));
+  for (const n of next || []) {
+    if (rm.has(n.id)) continue;
+    const old = b.get(n.id);
+    if (old && J(old) === J(n)) continue;               // sin cambio local: manda el servidor
+    const i = out.findIndex(x => x.id === n.id);
+    if (i >= 0) out[i] = old ? merge3(old, n, out[i]) : n;
+    else if (!old) out.push(n);                          // nuevo (si otro lo borró, no se revive)
+  }
+  return out;
 }
 async function ldPh(id, t) {
   try { const s = await getDoc(doc(db, "ph", `${sk(id)}_${t}`)); return s.exists() ? s.data().v : null; } catch { return null; }
 }
+// Devuelve true solo si el archivo quedó guardado.
 async function svPh(id, t, b64) {
   try {
     const compressed = await compressImg(b64);
     // Firestore doc limit ~1MB — warn if PDF is too large
     if (compressed.length > 900000) {
       alert(`El archivo es demasiado grande (${Math.round(compressed.length/1024)}KB). El límite es ~700KB. Intenta comprimir el PDF antes de subirlo.`);
-      return;
+      return false;
     }
     await setDoc(doc(db, "ph", `${sk(id)}_${t}`), { v: compressed, t: Date.now() });
-  } catch(e) { console.error("svPh:", e.message); }
+    return true;
+  } catch(e) { avisoError("archivo " + t, e); return false; }
 }
 
 const CSS = `
@@ -1353,7 +1417,7 @@ function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
             if (!f.vehicleId) return;
             if (!f.markComplete && !f.leftAt.trim()) { alert("Dinos dónde estás dejando la carga o la unidad."); return; }
             const leg = { id: genId(), driverId: currentDriver.id, driverName: currentDriver.name, vehicleId: f.vehicleId, date: f.date, startTime: f.startTime, endKm: f.endKm, notes: f.notes, leftAt: f.markComplete ? "" : f.leftAt.trim() };
-            onSave(trip.id, { legs: [...(trip.legs || []), leg], tripStatus: f.markComplete ? "completado" : "en_curso" });
+            onSave(trip.id, cur => ({ legs: [...(cur.legs || []), leg], tripStatus: f.markComplete ? "completado" : "en_curso" }));
           }}>
           {f.markComplete ? "✅ Guardar y cerrar el viaje" : "🔄 Guardar mi tramo"}
         </button>
@@ -1404,7 +1468,7 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
       {view === "relay" && relayTrip && (
         <div className="page">
           <TripContinueForm trip={relayTrip} vehicles={av} currentDriver={driver}
-            onSave={(id, patch) => { onUpdate(id, patch); showToast("Tramo guardado"); setRelayTrip(null); setView("home"); }}
+            onSave={async (id, patch) => { if (!(await onUpdate(id, patch))) return; showToast("Tramo guardado"); setRelayTrip(null); setView("home"); }}
             onCancel={() => { setRelayTrip(null); setView("home"); }} />
         </div>
       )}
@@ -1421,14 +1485,14 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
           <div className="stitle mb12">Registrar Nuevo Viaje</div>
           <TripForm trips={trips} drivers={drivers} vehicles={av} razones={razones} clients={clients} currentDriver={driver} isChofer={true}
             gpsOrigin={gpsTrip?.startData?.address} gpsDestination={gpsTrip?.endLoc?.address} gpsVehicleId={gpsTrip?.vehicleId}
-            onSave={t => { onAdd(t); showToast("Viaje registrado"); setGpsTrip(null); setView("home"); }}
+            onSave={async t => { if (!(await onAdd(t))) return; showToast("Viaje registrado"); setGpsTrip(null); setView("home"); }}
             onCancel={() => { setGpsTrip(null); setView("home"); }} />
         </div>
       )}
       {view === "inspeccion" && (
         <div className="page"><div className="stitle mb12">Inspección Físico-Mecánica</div>
           <InspectionForm vehicles={av} currentDriver={driver}
-            onSave={i => { onAddIns(i); showToast("Inspección guardada"); setView("home"); }}
+            onSave={async i => { if (!(await onAddIns(i))) return; showToast("Inspección guardada"); setView("home"); }}
             onCancel={() => setView("home")} />
         </div>
       )}
@@ -1690,7 +1754,7 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onS
     }
     setShowForm(false);
   };
-  const delSlot = id => onSaveSchedule(schedule.filter(s => s.id !== id));
+  const delSlot = id => onSaveSchedule(schedule.filter(s => s.id !== id), [id]);
   return (
     <div className="page">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>📅 Programar Unidades</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Asignar</button></div>
@@ -1766,7 +1830,7 @@ function CoordInstructions({ vehicles, drivers, razones, instructions, onSaveIns
     onSaveInstructions([...instructions, { ...f, id: genId(), ack: false, vehiclePlate: v?.plates, createdAt: new Date().toISOString() }]);
     setShowForm(false);
   };
-  const del = id => onSaveInstructions(instructions.filter(i => i.id !== id));
+  const del = id => onSaveInstructions(instructions.filter(i => i.id !== id), [id]);
   const sorted = [...instructions].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return (
     <div className="page">
@@ -2320,11 +2384,12 @@ function TripExpensesManager({ trip, onUpdate }) {
   const addE = () => {
     const amt = parseFloat(newE.amount);
     if (!newE.desc || isNaN(amt) || amt <= 0) return;
-    save({ tripExpenses: [...expenses, { id: genId(), cat: newE.cat, desc: newE.desc, amount: amt, paid: newE.paid, paymentMethod: newE.paid ? newE.paymentMethod : "", paidDate: newE.paid ? today() : null }] });
+    const item = { id: genId(), cat: newE.cat, desc: newE.desc, amount: amt, paid: newE.paid, paymentMethod: newE.paid ? newE.paymentMethod : "", paidDate: newE.paid ? today() : null };
+    save(cur => ({ tripExpenses: [...(cur.tripExpenses || []), item] }));
     setNewE({ cat: "Comisión", desc: "", amount: "", paid: false, paymentMethod: "transferencia" });
   };
-  const markPaid = id => { save({ tripExpenses: expenses.map(e => e.id === id ? { ...e, paid: true, paidDate: today(), paymentMethod: payMethod } : e) }); setPayingId(null); };
-  const delE = id => { save({ tripExpenses: expenses.filter(e => e.id !== id) }); setDelEId(null); };
+  const markPaid = id => { const pm = payMethod; save(cur => ({ tripExpenses: (cur.tripExpenses || []).map(e => e.id === id ? { ...e, paid: true, paidDate: today(), paymentMethod: pm } : e) })); setPayingId(null); };
+  const delE = id => { save(cur => ({ tripExpenses: (cur.tripExpenses || []).filter(e => e.id !== id) })); setDelEId(null); };
   const total = expenses.reduce((s, e) => s + e.amount, 0);
   const pending = expenses.filter(e => e.paid !== true).reduce((s, e) => s + e.amount, 0);
   return (
@@ -2690,8 +2755,8 @@ function PatioPanel({ trips, vehicles, onUpdate }) {
   const [enlazando, setEnlazando] = useState({});
   const abiertos = retirosAbiertos(trips);
   if (!abiertos.length) return null;
-  const cerrar = r => onUpdate(r.id, { retiro: { ...r.retiro, cerrado: true, cerradoAt: new Date().toISOString() } });
-  const partidas = (r, n) => onUpdate(r.id, { retiro: { ...r.retiro, partidas: n ? Number(n) : null } });
+  const cerrar = r => onUpdate(r.id, cur => ({ retiro: { ...(cur.retiro || {}), cerrado: true, cerradoAt: new Date().toISOString() } }));
+  const partidas = (r, n) => onUpdate(r.id, cur => ({ retiro: { ...(cur.retiro || {}), partidas: n ? Number(n) : null } }));
   return (
     <div className="card mb12" style={{ borderLeft: "3px solid var(--amber)" }}>
       <div style={{ fontWeight: 700, marginBottom: 4 }}>📦 Mercancía en el patio ({abiertos.length})</div>
@@ -2813,7 +2878,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
         <div className="card mb16">
           <div className="flex aic jb mb12"><span style={{ fontWeight: 700 }}>Registrar Viaje</span><button className="btn btn-g btn-sm" onClick={() => setShowForm(false)}>✕</button></div>
           <TripForm trips={trips} drivers={drivers} vehicles={vehicles.filter(v => v.active)} razones={razones} clients={clients} currentDriver={null} isChofer={false}
-            onSave={t => { onAdd(t); setShowForm(false); }} onCancel={() => setShowForm(false)} />
+            onSave={async t => { if (await onAdd(t)) setShowForm(false); }} onCancel={() => setShowForm(false)} />
         </div>
       )}
       <div className="card mb12">
@@ -3062,7 +3127,7 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
       {showForm && (
         <div className="card mb12">
           <div className="flex aic jb mb12"><span style={{ fontWeight: 700 }}>Registrar Tercerizado</span><button className="btn btn-g btn-sm" onClick={() => setShowForm(false)}>✕</button></div>
-          <OutsourcedForm razones={razones} clients={clients} providers={providers} onSave={o => { onAdd(o); setShowForm(false); }} onCancel={() => setShowForm(false)} />
+          <OutsourcedForm razones={razones} clients={clients} providers={providers} onSave={async o => { if (await onAdd(o)) setShowForm(false); }} onCancel={() => setShowForm(false)} />
         </div>
       )}
       {(overdue.length > 0 || soon.length > 0) && (
@@ -3206,7 +3271,7 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
     onSaveExpenses([...expenses, { id: genId(), razonSocialId: selRS, month: mk, cat: newE.cat, desc: newE.desc, amount: amt, createdAt: new Date().toISOString() }]);
     setNewE(p => ({ ...p, desc: "", amount: "" }));
   };
-  const delExp = id => onSaveExpenses(expenses.filter(e => e.id !== id));
+  const delExp = id => onSaveExpenses(expenses.filter(e => e.id !== id), [id]);
   const byCat = EXP_CATS.map(c => ({ c, total: rsExps.filter(e => e.cat === c).reduce((s, e) => s + e.amount, 0) })).filter(x => x.total > 0);
   const rs = razones.find(r => r.id === selRS);
   return (
@@ -3453,7 +3518,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                       <div className="flex gap4">
                         <button className="btn btn-g btn-sm" onClick={() => startEdit(v.id, v)}>✏️</button>
                         <button className={`btn btn-sm ${v.active?"btn-g":"btn-a"}`} onClick={() => onSaveVehicles(vehicles.map(x=>x.id===v.id?{...x,active:!x.active}:x))}>{v.active?"Desactivar":"Activar"}</button>
-                        <DelBtn uid={`v:${v.id}`} onConfirm={() => onSaveVehicles(vehicles.filter(x=>x.id!==v.id))} />
+                        <DelBtn uid={`v:${v.id}`} onConfirm={() => onSaveVehicles(vehicles.filter(x=>x.id!==v.id), [v.id])} />
                       </div>
                     </div>
                     {interval > 0 && (
@@ -3506,7 +3571,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div className="flex gap4">
                     <button className="btn btn-g btn-sm" onClick={() => startEdit(d.id, d)}>✏️</button>
                     <button className={`btn btn-sm ${d.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveDrivers(drivers.map(x => x.id === d.id ? { ...x, active: !x.active } : x))}>{d.active ? "Desactivar" : "Activar"}</button>
-                    <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id))} />
+                    <DelBtn uid={`d:${d.id}`} onConfirm={() => onSaveDrivers(drivers.filter(x => x.id !== d.id), [d.id])} />
                   </div>
                 </div>
               )}
@@ -3568,7 +3633,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                         onClick={() => onSaveClients((clients||[]).map(x => x.id === c.id ? { ...x, active: x.active === false } : x))}>
                         {c.active !== false ? "Desactivar" : "Activar"}
                       </button>
-                      <DelBtn uid={`c:${c.id}`} onConfirm={() => onSaveClients((clients||[]).filter(x => x.id !== c.id))} />
+                      <DelBtn uid={`c:${c.id}`} onConfirm={() => onSaveClients((clients||[]).filter(x => x.id !== c.id), [c.id])} />
                     </div>
                   </div>
                 )}
@@ -3630,7 +3695,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                         onClick={() => onSaveProviders((providers||[]).map(x => x.id === p.id ? { ...x, active: x.active === false } : x))}>
                         {p.active !== false ? "Desactivar" : "Activar"}
                       </button>
-                      <DelBtn uid={`p:${p.id}`} onConfirm={() => onSaveProviders((providers||[]).filter(x => x.id !== p.id))} />
+                      <DelBtn uid={`p:${p.id}`} onConfirm={() => onSaveProviders((providers||[]).filter(x => x.id !== p.id), [p.id])} />
                     </div>
                   </div>
                 )}
@@ -3670,7 +3735,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                 <div className="flex gap4">
                   <button className="btn btn-g btn-sm" onClick={() => startEdit(r.id, r)}>✏️</button>
                   <button className={`btn btn-sm ${r.active ? "btn-g" : "btn-a"}`} onClick={() => onSaveRazones(razones.map(x => x.id === r.id ? { ...x, active: !x.active } : x))}>{r.active ? "Desactivar" : "Activar"}</button>
-                  <DelBtn uid={`r:${r.id}`} onConfirm={() => onSaveRazones(razones.filter(x => x.id !== r.id))} />
+                  <DelBtn uid={`r:${r.id}`} onConfirm={() => onSaveRazones(razones.filter(x => x.id !== r.id), [r.id])} />
                 </div>
               </div>
             )}
@@ -4275,8 +4340,7 @@ function PendingExpenseItem({ e, onUpdate }) {
                 <option value="cheque">📝 Cheque</option>
               </select>
               <button className="btn btn-gr btn-sm" onClick={() => {
-                const updated = (e.trip.tripExpenses || []).map(x => x.id === e.id ? { ...x, paid: true, paidDate: today(), paymentMethod: payM } : x);
-                onUpdate(e.trip.id, { tripExpenses: updated });
+                onUpdate(e.trip.id, cur => ({ tripExpenses: (cur.tripExpenses || []).map(x => x.id === e.id ? { ...x, paid: true, paidDate: today(), paymentMethod: payM } : x) }));
                 setPaying(false);
               }}>✓ Pagar</button>
               <button className="btn btn-g btn-sm" onClick={() => setPaying(false)}>✕</button>
@@ -4637,13 +4701,15 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
     if (isNaN(amt) || amt <= 0) return;
     const d = distributions.find(x => x.id === payModal.distId);
     if (!d) return;
-    const updPagos = d.pagos.map(p => {
-      if (p.socioId !== payModal.socioId) return p;
-      const nuevos = [...(p.montosPagados||[]), { monto: amt, fecha: payDate, id: genId() }];
+    const pago = { monto: amt, fecha: payDate, id: genId() };
+    const socioId = payModal.socioId;
+    // Se calcula sobre la distribución fresca (no pisa un pago registrado en otro lado)
+    onUpdDistribution(payModal.distId, cur => ({ pagos: (cur.pagos || []).map(p => {
+      if (p.socioId !== socioId) return p;
+      const nuevos = [...(p.montosPagados||[]), pago];
       const totalPagado = nuevos.reduce((s, x) => s + x.monto, 0);
       return { ...p, montosPagados: nuevos, pendiente: p.utilidad - totalPagado, pagado: totalPagado >= p.utilidad };
-    });
-    onUpdDistribution(payModal.distId, { pagos: updPagos });
+    }) }));
     setPayModal(null); setPayAmt(""); setPayDate(today());
   };
 
@@ -4892,7 +4958,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
                   <div className="tsm txt2">{s.rol || "Socio"} · {(100 / socios.length).toFixed(1)}%</div>
                 </div>
                 <div className="flex gap4">
-                  <button className="btn btn-g btn-sm" onClick={() => onSaveSocios(socios.filter(x=>x.id!==s.id))}>🗑</button>
+                  <button className="btn btn-g btn-sm" onClick={() => onSaveSocios(socios.filter(x=>x.id!==s.id), [s.id])}>🗑</button>
                 </div>
               </div>
             ))}
@@ -5425,9 +5491,12 @@ export default function App() {
       // dispositivos se mantienen al dia y dejan de sobrescribirse entre si (una pestana con datos
       // viejos ya no pisa lo que guardo otra). Es ADITIVO: si fallara, la carga inicial de abajo
       // (Promise.all) sigue funcionando igual que antes; el login no depende de esto.
+      // Claves que ya llegaron por onSnapshot: la carga inicial (Promise.all) ya
+      // no las sobrescribe con una lectura que pudo ser más vieja.
+      const got = new Set();
       try {
         const listen = (k, setter, def) => onSnapshot(doc(db, "tc", sk(k)),
-          s => setter(s.exists() ? s.data().v : def),
+          s => { got.add(k); setter(s.exists() ? s.data().v : def); },
           err => console.error("onSnapshot", k, err.message));
         dataUnsubs = [
           listen("tr:trips", setTrips, []),
@@ -5463,12 +5532,15 @@ export default function App() {
         ld("tr:instant",{vehicles:[],drivers:[]}), ld("tr:status_requests",[]),
         ld("tr:socios",[]), ld("tr:distributions",[]), ld("tr:tarifario",[]),
       ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq,soc,dist,tar]) => {
-        setTrips(t); setInspections(i); setVehicles(v); setDrivers(d);
-        setExpenses(e); setOutsourced(o); setRazones(r); setClients(cl||[]); setProviders(prov||[]);
-        setInstructions(ins); setSchedule(sc);
-        setInstant(inst||{vehicles:[],drivers:[]});
-        setStatusRequests(sreq||[]);
-        setSocios(soc||[]); setDistributions(dist||[]); setTarifario(tar||[]);
+        const put = (k, setter, v) => { if (!got.has(k)) setter(v); };
+        put("tr:trips", setTrips, t); put("tr:inspections", setInspections, i);
+        put("tr:vehicles", setVehicles, v); put("tr:drivers", setDrivers, d);
+        put("tr:expenses", setExpenses, e); put("tr:outsourced", setOutsourced, o);
+        put("tr:razones", setRazones, r); put("tr:clients", setClients, cl||[]); put("tr:providers", setProviders, prov||[]);
+        put("tr:instructions", setInstructions, ins); put("tr:schedule", setSchedule, sc);
+        put("tr:instant", setInstant, inst||{vehicles:[],drivers:[]});
+        put("tr:status_requests", setStatusRequests, sreq||[]);
+        put("tr:socios", setSocios, soc||[]); put("tr:distributions", setDistributions, dist||[]); put("tr:tarifario", setTarifario, tar||[]);
         if (info.rol === "chofer") {
           // 1. Check saved email→driverId mapping in Firestore
           const emailMap = await ld("tr:email_driver_map", {});
@@ -5492,45 +5564,70 @@ export default function App() {
     return () => { cleanupData(); unsub(); };
   }, []);
 
-  const upd = (arr, id, p) => arr.map(x => x.id === id ? { ...x, ...p } : x);
-  // Guardado seguro: cada escritura se calcula desde la copia MAS FRESCA del estado
-  // (setX(prev => ...)), no de una foto vieja del closure. Elimina la condicion de
-  // carrera que perdia montos al capturar varios seguidos. La escritura es INMEDIATA
-  // (sin timer), asi el ultimo monto se persiste aunque recargues al instante.
-  const addTrip = t => setTrips(prev => { const u = [...prev, t]; sv("tr:trips", u); return u; });
-  const addChecada = ch => setChecadas(prev => { const u = [...prev, ch]; sv("tr:checadas", u); return u; });
-  const updTrip = (id, p) => setTrips(prev => { const u = upd(prev, id, p); sv("tr:trips", u); return u; });
-  const delTrip = id => setTrips(prev => { const u = prev.filter(t => t.id !== id); sv("tr:trips", u); return u; });
-  const addIns = i => setInspections(prev => { const u = [...prev, i]; sv("tr:inspections", u); return u; });
-  const delIns = id => setInspections(prev => { const u = prev.filter(i => i.id !== id); sv("tr:inspections", u); return u; });
-  const resolveInspection = id => setInspections(prev => { const u = upd(prev, id, { resolved: true, resolvedAt: today() }); sv("tr:inspections", u); return u; });
-  const addOut = o => setOutsourced(prev => { const u = [...prev, o]; sv("tr:outsourced", u); return u; });
-  const updOut = (id, p) => setOutsourced(prev => { const u = upd(prev, id, p); sv("tr:outsourced", u); return u; });
-  const delOut = id => setOutsourced(prev => { const u = prev.filter(o => o.id !== id); sv("tr:outsourced", u); return u; });
-  const saveExps = e => { setExpenses(e); sv("tr:expenses", e); };
-  const saveVehicles = v => { setVehicles(v); sv("tr:vehicles", v); };
-  const saveDrivers = d => { setDrivers(d); sv("tr:drivers", d); };
-  const saveRazones = r => { setRazones(r); sv("tr:razones", r); };
-  const saveClients = c => { setClients(c); sv("tr:clients", c); };
-  const saveProviders = p => { setProviders(p); sv("tr:providers", p); };
-  const saveInstructions = i => { setInstructions(i); sv("tr:instructions", i); };
-  const saveSchedule = s => { setSchedule(s); sv("tr:schedule", s); };
-  const ackInstruction = id => setInstructions(prev => { const u = upd(prev, id, { ack: true }); sv("tr:instructions", u); return u; });
-  const updateInstant = u => { setInstant(u); sv("tr:instant", u); };
-  const addStatusRequest = req => setStatusRequests(prev => { const u = [...prev, req]; sv("tr:status_requests", u); return u; });
-  const updStatusRequest = (id, patch) => setStatusRequests(prev => { const u = prev.map(r => r.id === id ? { ...r, ...patch } : r); sv("tr:status_requests", u); return u; });
-  const saveSocios = s => { setSocios(s); sv("tr:socios", s); };
-  const saveDistributions = d => { setDistributions(d); sv("tr:distributions", d); };
-  const addDistribution = d => setDistributions(prev => { const u = [...prev, d]; sv("tr:distributions", u); return u; });
-  const updDistribution = (id, patch) => setDistributions(prev => { const u = prev.map(d => d.id === id ? { ...d, ...patch } : d); sv("tr:distributions", u); return u; });
-  const saveTarifario = t => { setTarifario(t); sv("tr:tarifario", t); };
-  const upsertTarifa = (clientName, origin, destination, base, extras) => setTarifario(prev => {
+  // Todas las escrituras pasan por txDoc (transacción sobre el doc fresco) y el
+  // estado local se actualiza con lo que quedó guardado. Devuelven true/false.
+  const ok = setter => r => { if (r == null) return false; setter(r); return true; };
+  const arrOps = (k, setter, base, def = []) => ({
+    add: item => txDoc(k, a => [...(a || []), item], def).then(ok(setter)),
+    upd: (id, p) => txDoc(k, a => upd(a || [], id, p), def).then(ok(setter)),
+    del: id => txDoc(k, a => (a || []).filter(x => x.id !== id), def).then(ok(setter)),
+    // arreglo completo armado en un componente → mezcla por id; borra solo removeIds
+    save: (next, removeIds) => txDoc(k, a => mergeById(base, next, a, removeIds), def).then(ok(setter)),
+  });
+  const T = arrOps("tr:trips", setTrips, trips);
+  const CH = arrOps("tr:checadas", setChecadas, checadas);
+  const INS = arrOps("tr:inspections", setInspections, inspections);
+  const OUT = arrOps("tr:outsourced", setOutsourced, outsourced);
+  const EXP = arrOps("tr:expenses", setExpenses, expenses);
+  const VEH = arrOps("tr:vehicles", setVehicles, vehicles, DEF_VEHICLES);
+  const DRV = arrOps("tr:drivers", setDrivers, drivers, DEF_DRIVERS);
+  const RS = arrOps("tr:razones", setRazones, razones, DEF_RS);
+  const CLI = arrOps("tr:clients", v => setClients(v || []), clients);
+  const PRV = arrOps("tr:providers", v => setProviders(v || []), providers);
+  const INSTR = arrOps("tr:instructions", setInstructions, instructions);
+  const SCH = arrOps("tr:schedule", setSchedule, schedule);
+  const SREQ = arrOps("tr:status_requests", v => setStatusRequests(v || []), statusRequests);
+  const SOC = arrOps("tr:socios", v => setSocios(v || []), socios);
+  const DIST = arrOps("tr:distributions", v => setDistributions(v || []), distributions);
+  const TAR = arrOps("tr:tarifario", v => setTarifario(v || []), tarifario);
+  const addTrip = T.add;
+  const addChecada = CH.add;
+  const updTrip = T.upd;
+  const delTrip = T.del;
+  const addIns = INS.add;
+  const delIns = INS.del;
+  const resolveInspection = id => INS.upd(id, { resolved: true, resolvedAt: today() });
+  const addOut = OUT.add;
+  const updOut = OUT.upd;
+  const delOut = OUT.del;
+  const saveExps = EXP.save;
+  const saveVehicles = VEH.save;
+  const saveDrivers = DRV.save;
+  const saveRazones = RS.save;
+  const saveClients = CLI.save;
+  const saveProviders = PRV.save;
+  const saveInstructions = INSTR.save;
+  const saveSchedule = SCH.save;
+  const ackInstruction = id => INSTR.upd(id, { ack: true });
+  // tr:instant es un objeto (quién está ocupado): se mezcla campo por campo, así
+  // dos choferes que inician viaje a la vez no se pisan.
+  const updateInstant = u => txDoc("tr:instant", fresh => merge3(instant, u, fresh || { vehicles: [], drivers: [] }), { vehicles: [], drivers: [] })
+    .then(ok(v => setInstant(v || { vehicles: [], drivers: [] })));
+  const addStatusRequest = SREQ.add;
+  const updStatusRequest = SREQ.upd;
+  const saveSocios = SOC.save;
+  const saveDistributions = DIST.save;
+  const addDistribution = DIST.add;
+  const updDistribution = DIST.upd;
+  const saveTarifario = TAR.save;
+  const delTarifa = TAR.del;
+  const upsertTarifa = (clientName, origin, destination, base, extras) => txDoc("tr:tarifario", fresh => {
+    const prev = fresh || [];
     const key = `${clientName}||${origin}||${destination}`.toLowerCase();
     const existing = prev.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
     const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
-    const u = existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
-    sv("tr:tarifario", u); return u;
-  });
+    return existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
+  }, []).then(ok(v => setTarifario(v || [])));
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -5542,9 +5639,8 @@ export default function App() {
 
   if (role === "select_driver" && pendingDriverSelect) return (
     <DriverSelector info={pendingDriverSelect} onSelect={async selected => {
-      const emailMap = await ld("tr:email_driver_map", {});
-      emailMap[pendingDriverSelect.userEmail] = selected.id;
-      await sv("tr:email_driver_map", emailMap);
+      const saved = await txDoc("tr:email_driver_map", m => ({ ...(m || {}), [pendingDriverSelect.userEmail]: selected.id }), {});
+      if (saved == null) return;
       setDriver(selected);
       setPendingDriverSelect(null);
       setRole("chofer");
