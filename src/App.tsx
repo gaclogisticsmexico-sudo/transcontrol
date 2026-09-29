@@ -396,6 +396,9 @@ const retirosAbiertos = trips => (trips || []).filter(t => t.retiro && !t.retiro
 const entregasDe = (trips, id) => (trips || []).filter(t => t.retiroId === id);
 const diasDesde = f => { try { return Math.max(0, Math.floor((new Date(today()) - new Date(f)) / 86400000)); } catch { return 0; } };
 const rotulo = t => `${fmtDate(t.date)} · ${t.client || "sin cliente"} · ${t.origin || "?"}`;
+// Orden seguro (lo más nuevo primero) aunque falte createdAt: antes un registro
+// sin createdAt hacía b.createdAt.localeCompare → TypeError → pantalla en blanco.
+const porFechaDesc = (a, b) => String(b?.createdAt || b?.date || "").localeCompare(String(a?.createdAt || a?.date || ""));
 
 // Quién / con qué unidad va el servicio AHORA: el del último tramo (igual que el
 // bot: un relevo o un cambio de unidad por WhatsApp agrega un tramo).
@@ -957,7 +960,7 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
   // Servicios que este chofer lleva AHORA (iniciados por WhatsApp, sin cerrar)
   const enRuta = trips.filter(t => t.tripStatus === "en_ruta" && conductorActual(t) === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
-  const lastIns = [...inspections.filter(i => i.driverId === driver.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const lastIns = [...inspections.filter(i => i.driverId === driver.id)].sort(porFechaDesc)[0];
 
   // ── Checador: entrada/salida con ubicación del teléfono. El bot la verifica
   // contra el GPS de las unidades (debe estar a <250 m de una) en minutos.
@@ -1113,7 +1116,8 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
                 <span style={{ fontWeight: 700, color: "var(--amber)" }}>{fmtDate(ins.date)}{ins.startTime ? ` · ${ins.startTime}` : ""}</span>
                 <button className="btn btn-a btn-sm" onClick={() => onAck(ins.id)}>✓ Enterado</button>
               </div>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>{ins.pickup} → {ins.destination}</div>
+              {(ins.pickup || ins.destination) && <div style={{ fontWeight: 700, marginBottom: 6 }}>{ins.pickup || "?"} → {ins.destination || "?"}</div>}
+              {ins.text && <div className="tsm mb4" style={{ whiteSpace: "pre-line" }}>{ins.text}</div>}
               {ins.vehiclePlate && <div className="tsm txt2 mb4">🚛 Unidad: {ins.vehiclePlate}</div>}
               {ins.client && <div className="tsm txt2 mb4">👤 Cliente: {ins.client}</div>}
               {ins.cargo && <div className="tsm txt2 mb4">📦 {CARGO.find(c => c.v === ins.cargo)?.l}</div>}
@@ -1856,7 +1860,11 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onS
       f.notes ? `📝 ${f.notes}` : null,
     ].filter(Boolean).join("\n");
     if (onSaveInstructions) {
-      onSaveInstructions([...(instructions || []), { id: genId(), driverId: f.driverId, vehicleId: f.vehicleId, text: lines, date: today(), ack: false, fromSchedule: true }]);
+      // Mismo formato que una instrucción manual (pickup/destination/createdAt):
+      // antes faltaba createdAt y la pestaña Instrucciones tronaba en blanco.
+      onSaveInstructions([...(instructions || []), { id: genId(), driverId: f.driverId, vehicleId: f.vehicleId, vehiclePlate: v?.plates || "",
+        pickup: f.origin || "", destination: f.destination || "", client: f.client || "", cargo: f.cargo, startTime: f.startTime,
+        notes: f.notes || "", razonSocialId: f.razonSocialId, text: lines, date: selDate, ack: false, fromSchedule: true, createdAt: new Date().toISOString() }]);
     }
     setShowForm(false);
   };
@@ -1887,7 +1895,7 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onS
           {(() => {
             const selDriver = drivers.find(d => d.id === f.driverId);
             if (!selDriver?.phone) return <div className="tsm txt2 mt6">💡 Agrega el número de WhatsApp del conductor en Configuración para enviarle el viaje también por WhatsApp.</div>;
-            const msg = encodeURIComponent(`*TransControl* 🚛\nHola ${selDriver.name}, tienes un viaje asignado:\n📅 ${f.date || "Fecha por confirmar"}\n🕐 ${f.startTime} – ${f.endTime}\n${f.origin ? `📍 ${f.origin} → ${f.destination}` : ""}\n${f.client ? `🤝 Cliente: ${f.client}` : ""}\n${f.notes ? `📝 ${f.notes}` : ""}\n\nAbre la app para ver los detalles y confirmar.`);
+            const msg = encodeURIComponent(`*TransControl* 🚛\nHola ${selDriver.name}, tienes un viaje asignado:\n📅 ${fmtDate(selDate)}\n🕐 ${f.startTime} – ${f.endTime}\n${f.origin ? `📍 ${f.origin} → ${f.destination}` : ""}\n${f.client ? `🤝 Cliente: ${f.client}` : ""}\n${f.notes ? `📝 ${f.notes}` : ""}\n\nAbre la app para ver los detalles y confirmar.`);
             return (
               <a href={`https://wa.me/521${selDriver.phone}?text=${msg}`} target="_blank" rel="noreferrer"
                 className="btn btn-g mt6" style={{ textDecoration: "none", justifyContent: "center" }}>
@@ -1937,7 +1945,7 @@ function CoordInstructions({ vehicles, drivers, razones, instructions, onSaveIns
     setShowForm(false);
   };
   const del = id => onSaveInstructions(instructions.filter(i => i.id !== id), [id]);
-  const sorted = [...instructions].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const sorted = [...instructions].sort(porFechaDesc);
   return (
     <div className="page">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>📨 Instrucciones a Conductores</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Nueva</button></div>
@@ -1968,7 +1976,8 @@ function CoordInstructions({ vehicles, drivers, razones, instructions, onSaveIns
                   <div className="flex aic gap8"><span style={{ fontWeight: 700 }}>{d?.name || "—"}</span><span className={`badge ${ins.ack ? "bg" : "ba"}`}>{ins.ack ? "✓ Enterado" : "Pendiente"}</span></div>
                   <div className="flex gap4 aic"><span className="tsm txt2">{fmtDate(ins.date)}</span><button className="btn btn-g btn-sm" onClick={() => del(ins.id)}><Ico path={IC.trash} size={14} /></button></div>
                 </div>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>{ins.pickup} → {ins.destination}</div>
+                {(ins.pickup || ins.destination) && <div style={{ fontWeight: 700, marginBottom: 4 }}>{ins.pickup || "?"} → {ins.destination || "?"}</div>}
+                {ins.text && <div className="tsm mb4" style={{ whiteSpace: "pre-line" }}>{ins.text}</div>}
                 <div className="flex gap8 tsm txt2 wrap">
                   {v && <span>🚛 {v.plates}</span>}{ins.startTime && <span>🕐 {ins.startTime}</span>}
                   {ins.client && <span>👤 {ins.client}</span>}
