@@ -5624,7 +5624,7 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
   );
 }
 
-function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout }) {
+function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -5666,6 +5666,11 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
         <div className="logo">⬡ TRANSCONTROL</div>
         <div className="flex aic gap8">
           <span className="badge ba">Admin</span>
+          {onToggleVerPrueba && (nPrueba > 0 || verPrueba) && (
+            <button className={`btn btn-sm ${verPrueba ? "btn-a" : "btn-g"}`} title="Datos marcados como prueba (choferes de prueba por WhatsApp)" onClick={onToggleVerPrueba}>
+              🧪 {verPrueba ? "Ocultar prueba" : `Ver datos de prueba (${nPrueba})`}
+            </button>
+          )}
           <button className="btn btn-g btn-sm" title="Exportar copia de seguridad" onClick={exportBackup}>💾</button>
           <button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /> Salir</button>
         </div>
@@ -5702,8 +5707,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState(null); const [driver, setDriver] = useState(null);
   const [pendingDriverSelect, setPendingDriverSelect] = useState(null);
-  const [trips, setTrips] = useState([]); const [inspections, setInspections] = useState([]);
-  const [vehicles, setVehicles] = useState(DEF_VEHICLES); const [drivers, setDrivers] = useState(DEF_DRIVERS);
+  const [tripsAll, setTrips] = useState([]); const [inspections, setInspections] = useState([]);
+  const [vehicles, setVehicles] = useState(DEF_VEHICLES); const [driversAll, setDrivers] = useState(DEF_DRIVERS);
   const [expenses, setExpenses] = useState([]); const [outsourced, setOutsourced] = useState([]);
   const [razones, setRazones] = useState(DEF_RS);
   const [clients, setClients] = useState([]);
@@ -5716,9 +5721,19 @@ export default function App() {
   const [tarifario, setTarifario] = useState([]);
   const [gpsKm, setGpsKm] = useState([]);           // foto diaria del GPS (bot)
   const [cargasComb, setCargasComb] = useState([]);  // cargas Edenred (bot)
-  const [checadas, setChecadas] = useState([]);       // checador de choferes
+  const [checadasAll, setChecadas] = useState([]);    // checador de choferes
   const [gpsPos, setGpsPos] = useState({ v: [] });    // posicion actual de las unidades (bot)
   const [mantenimientos, setMantenimientos] = useState([]);
+  // Datos de prueba (prueba:true, los genera el bot con choferes de prueba por
+  // WhatsApp): fuera de TODAS las vistas y KPIs. El estado guarda todo (las
+  // escrituras son por id, así que filtrar aquí no borra nada) y solo el admin
+  // puede prenderlos con "Ver datos de prueba".
+  const [verPrueba, setVerPrueba] = useState(false);
+  const verTest = verPrueba || !!driver?.prueba;
+  const trips = useMemo(() => verTest ? tripsAll : (tripsAll || []).filter(x => !x?.prueba), [tripsAll, verTest]);
+  const drivers = useMemo(() => verTest ? driversAll : (driversAll || []).filter(x => !x?.prueba), [driversAll, verTest]);
+  const checadas = useMemo(() => verTest ? checadasAll : (checadasAll || []).filter(x => !x?.prueba), [checadasAll, verTest]);
+  const nPrueba = (tripsAll || []).filter(x => x?.prueba).length + (checadasAll || []).filter(x => x?.prueba).length + (driversAll || []).filter(x => x?.prueba).length;
 
   useEffect(() => {
     const el = document.createElement("style"); el.textContent = CSS; document.head.appendChild(el);
@@ -5795,7 +5810,7 @@ export default function App() {
             setRole("chofer");
           } else {
             // 3. No match — show selector
-            setPendingDriverSelect({ userEmail: user.email?.toLowerCase(), userInfo: info, availableDrivers: d.filter(dr => dr.active !== false) });
+            setPendingDriverSelect({ userEmail: user.email?.toLowerCase(), userInfo: info, availableDrivers: d.filter(dr => dr.active !== false && !dr.prueba) });
             setRole("select_driver");
           }
         } else {
@@ -5816,13 +5831,13 @@ export default function App() {
     // arreglo completo armado en un componente → mezcla por id; borra solo removeIds
     save: (next, removeIds) => txDoc(k, a => mergeById(base, next, a, removeIds), def).then(ok(setter)),
   });
-  const T = arrOps("tr:trips", setTrips, trips);
-  const CH = arrOps("tr:checadas", setChecadas, checadas);
+  const T = arrOps("tr:trips", setTrips, tripsAll);
+  const CH = arrOps("tr:checadas", setChecadas, checadasAll);
   const INS = arrOps("tr:inspections", setInspections, inspections);
   const OUT = arrOps("tr:outsourced", setOutsourced, outsourced);
   const EXP = arrOps("tr:expenses", setExpenses, expenses);
   const VEH = arrOps("tr:vehicles", setVehicles, vehicles, DEF_VEHICLES);
-  const DRV = arrOps("tr:drivers", setDrivers, drivers, DEF_DRIVERS);
+  const DRV = arrOps("tr:drivers", setDrivers, driversAll, DEF_DRIVERS);
   const RS = arrOps("tr:razones", setRazones, razones, DEF_RS);
   const CLI = arrOps("tr:clients", v => setClients(v || []), clients);
   const PRV = arrOps("tr:providers", v => setProviders(v || []), providers);
@@ -5921,6 +5936,7 @@ export default function App() {
       onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
       onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
       onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario}
-      onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
+      onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)}
+      verPrueba={verPrueba} nPrueba={nPrueba} onToggleVerPrueba={() => setVerPrueba(p => !p)} />
   );
 }
