@@ -4660,11 +4660,18 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
 
   // ── Calculations ──
   const calcPeriodo = (p) => {
-    const pTrips = trips.filter(t => t.date.startsWith(p));
-    const ingresos = pTrips.reduce((s, t) => s + totalTrip(t), 0);
+    const pTrips = trips.filter(t => (t.date || "").startsWith(p));
+    const pOut = outsourced.filter(o => (o.date || "").startsWith(p));
+    // Utilidad sobre SUBTOTALES (sin IVA): el IVA no es ingreso, se entera al SAT.
+    // Ingreso = viajes propios + lo que cobramos al cliente en tercerizados (los
+    // "SOLO COSTO" no traen ingreso propio: su ingreso ya vive en otro viaje).
+    const ingViajes = pTrips.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const ingTerc = pOut.filter(o => !String(o.notes || "").toUpperCase().includes("SOLO COSTO"))
+      .reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
+    const ingresos = ingViajes + ingTerc;
     const gastosGen = expenses.filter(e => (e.month || e.date?.slice(0,7)) === p).reduce((s, e) => s + (e.amount||0), 0);
     const gastosViaje = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).reduce((ss, e) => ss + (e.amount||0), 0), 0);
-    const tercerizados = outsourced.filter(o => (o.date||"").startsWith(p)).reduce((s, o) => s + (o.providerAmount||0), 0);
+    const tercerizados = pOut.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
     const totalGastos = gastosGen + gastosViaje + tercerizados;
     const utilidad = ingresos - totalGastos;
     // Cobros y pagos efectivos del periodo
@@ -4674,7 +4681,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
     const porPagarProv = outsourced.filter(o => (o.date||"").startsWith(p) && !o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
     const pagadoGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid === true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
     const porPagarGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
-    return { ingresos, gastosGen, gastosViaje, tercerizados, totalGastos, utilidad, cobrado, porCobrar, pagadoProv, porPagarProv, pagadoGV, porPagarGV, nTrips: pTrips.length };
+    return { ingresos, ingViajes, ingTerc, gastosGen, gastosViaje, tercerizados, totalGastos, utilidad, cobrado, porCobrar, pagadoProv, porPagarProv, pagadoGV, porPagarGV, nTrips: pTrips.length, nOut: pOut.length };
   };
 
   // Outstanding from ALL past periods (not current month)
@@ -4721,7 +4728,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
     setPayModal(null); setPayAmt(""); setPayDate(today());
   };
 
-  const mesesDisp = [...new Set(trips.map(t => t.date.slice(0,7)))].sort().reverse();
+  const mesesDisp = [...new Set([...trips.map(t => (t.date || "").slice(0,7)), ...outsourced.map(o => (o.date || "").slice(0,7))].filter(Boolean))].sort().reverse();
 
   return (
     <div className="ap">
@@ -4742,14 +4749,15 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
             </select></Field>
           </div>
 
-          {calc.nTrips === 0 ? <Empty title="Sin viajes en este periodo" sub="Selecciona otro mes" /> : (<>
+          {calc.nTrips + calc.nOut === 0 ? <Empty title="Sin viajes en este periodo" sub="Selecciona otro mes" /> : (<>
           {/* Ingresos / Gastos */}
           <div className="g2 mb12">
             <div className="card" style={{ borderLeft: "4px solid var(--green)" }}>
               <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>💚 Ingresos del periodo</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: "var(--green)" }}>{fmt$(calc.ingresos)}</div>
-              <div className="tsm txt2 mt4">{calc.nTrips} viajes · Cobrado: {fmt$(calc.cobrado)}</div>
-              {calc.porCobrar > 0 && <div className="tsm" style={{ color: "var(--amber)" }}>⏳ Por cobrar: {fmt$(calc.porCobrar)}</div>}
+              <div className="tsm txt2 mt4">Subtotales sin IVA · Viajes propios: {fmt$(calc.ingViajes)} · Tercerizados: {fmt$(calc.ingTerc)}</div>
+              <div className="tsm txt2">{calc.nTrips} viajes + {calc.nOut} tercerizados · Cobrado (c/IVA): {fmt$(calc.cobrado)}</div>
+              {calc.porCobrar > 0 && <div className="tsm" style={{ color: "var(--amber)" }}>⏳ Por cobrar (c/IVA): {fmt$(calc.porCobrar)}</div>}
             </div>
             <div className="card" style={{ borderLeft: "4px solid var(--red)" }}>
               <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>🔴 Gastos del periodo</div>
