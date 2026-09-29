@@ -380,7 +380,7 @@ async function downloadClientZip(client, month, clientTrips) {
   const zip = new JSZip();
   const folder = zip.folder(`${client.replace(/[^a-zA-Z0-9]/g, "_")}_${month}`);
   for (const t of clientTrips) {
-    const name = `${t.date}_${t.origin.slice(0,8)}-${t.destination.slice(0,8)}`.replace(/[^a-zA-Z0-9-_]/g, "_");
+    const name = `${t.date}_${(t.origin || "").slice(0,8)}-${(t.destination || "").slice(0,8)}`.replace(/[^a-zA-Z0-9-_]/g, "_");
     const sub = folder.folder(name);
     for (const [type, label] of [["delivery","comprobante_entrega"],["patio","patio_regulador"],["invoice","factura"],["payment","comprobante_pago"]]) {
       const ph = await ldPh(t.id, type);
@@ -683,7 +683,7 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
                 <div className="flex gap8 aic"><span style={{ color: "var(--red)", fontWeight: 700 }}>{fmt$(e.amount)}</span><button className="btn btn-g btn-sm" onClick={() => setTripExps(p => p.filter(x => x.id !== e.id))}><Ico path={IC.x} size={12} /></button></div>
               </div>
             ))}
-            <div className="flex jb tsm mt4"><span className="txt2">Total gastos:</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{fmt$(tripExps.reduce((s, e) => s + e.amount, 0))}</span></div>
+            <div className="flex jb tsm mt4"><span className="txt2">Total gastos:</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{fmt$(tripExps.reduce((s, e) => s + (Number(e.amount) || 0), 0))}</span></div>
           </div>
         )}
       </div>
@@ -1156,7 +1156,7 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
       </div>
       <div className="g3 mb16">
         <div className="card kpi"><div className="kv">{my.filter(t => t.date === td).length}</div><div className="kl">Hoy</div></div>
-        <div className="card kpi"><div className="kv">{my.filter(t => t.date.startsWith(mk)).length}</div><div className="kl">Este mes</div></div>
+        <div className="card kpi"><div className="kv">{my.filter(t => (t.date || "").startsWith(mk)).length}</div><div className="kl">Este mes</div></div>
         <div className="card kpi"><div className="kv">{my.length}</div><div className="kl">Total</div></div>
       </div>
       {/* Pending status requests from coordinator */}
@@ -1322,7 +1322,7 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
   const toggle = id => setExpanded(p => ({ ...p, [id]: !p[id] }));
   const my = [...trips.filter(t =>
     t.driverId === driver.id || (t.legs || []).some(l => l.driverId === driver.id)
-  )].sort((a, b) => b.date.localeCompare(a.date));
+  )].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   if (!my.length) return <div className="page"><Empty title="Sin viajes registrados" sub="Tus viajes aparecerán aquí" /></div>;
   return (
     <div className="page">
@@ -1330,7 +1330,7 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
       <div className="fcol gap8">
         {my.map(t => {
           const v = vehicles.find(x => x.id === t.vehicleId);
-          const te = (t.tripExpenses || []).reduce((s, e) => s + e.amount, 0);
+          const te = (t.tripExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
           const legs = t.legs || [];
           const isRelay = t.driverId !== driver.id;
           const isExp = expanded[t.id];
@@ -1429,7 +1429,7 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
 }
 
 function ChoferMisInspecciones({ driver, inspections, vehicles }) {
-  const mine = [...inspections.filter(i => i.driverId === driver.id)].sort((a, b) => b.date.localeCompare(a.date));
+  const mine = [...inspections.filter(i => i.driverId === driver.id)].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   if (!mine.length) return <div className="page"><Empty title="Sin inspecciones" sub="Aparecerán aquí" /></div>;
   return (
     <div className="page">
@@ -1654,7 +1654,7 @@ function InspectionsView({ inspections, vehicles, drivers, onResolve, onDelete }
     if (fv && i.vehicleId !== fv) return false;
     if (onlyI && (!i.issues || i.resolved)) return false;
     return true;
-  }).sort((a, b) => b.date.localeCompare(a.date));
+  }).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const gv = id => vehicles.find(v => v.id === id); const gd = id => drivers.find(d => d.id === id);
   return (
     <div>
@@ -1674,7 +1674,7 @@ function InspectionsView({ inspections, vehicles, drivers, onResolve, onDelete }
             const v = gv(ins.vehicleId); const d = gd(ins.driverId);
             const pct = Math.round((ins.passedCount / ins.totalCount) * 100);
             const pc = pct === 100 ? "var(--green)" : pct >= 75 ? "var(--amber)" : "var(--red)";
-            const failed = CHECKLIST.filter(item => !ins.checks[item.id]);
+            const failed = CHECKLIST.filter(item => !(ins.checks || {})[item.id]);
             const hasActiveIssue = ins.issues && !ins.resolved;
             // Can delete: inspections without issues anytime, or with issues only after resolved
             const canDelete = !ins.issues || ins.resolved;
@@ -1867,7 +1867,7 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onS
   const [selDate, setSelDate] = useState(today());
   const [showForm, setShowForm] = useState(false);
   const [f, setF] = useState({ vehicleId: vehicles[0]?.id || "", driverId: drivers[0]?.id || "", startTime: "08:00", endTime: "18:00", client: "", origin: "", destination: "", cargo: "general", notes: "", razonSocialId: razones[0]?.id || "" });
-  const slots = schedule.filter(s => s.date === selDate).sort((a, b) => a.startTime.localeCompare(b.startTime));
+  const slots = schedule.filter(s => s.date === selDate).sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const addSlot = () => {
     if (!f.vehicleId || !f.driverId) return;
@@ -2053,7 +2053,7 @@ function CoordGastosViaje({ trips, onUpdate }) {
   const [expandedTrips, setExpandedTrips] = useState({});
   const [showAll, setShowAll] = useState(false);
   const toggleTrip = id => setExpandedTrips(p => ({ ...p, [id]: !p[id] }));
-  const sorted = [...trips].sort((a, b) => b.date.localeCompare(a.date));
+  const sorted = [...trips].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const withPending = sorted.filter(t => {
     if (t.noExtraExpenses) return false;
     const exp = t.tripExpenses || [];
@@ -2240,17 +2240,17 @@ function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
   if (sinCompl.length) alerts.push({ type: "warn", msg: `${sinCompl.length} servicio(s) pagado(s) sin complemento SAT (>5 días)` });
   const clients60 = [...new Set(trips.filter(t => (t.billingStatus||"sin_facturar") !== "pagado" && (t.billingStatus||"sin_facturar") !== "complemento" && t.amount > 0 && daysSince(t.date) > 60).map(t => t.client))];
   if (clients60.length) alerts.push({ type: "red", msg: `${clients60.length} cliente(s) con adeudo >60 días: ${clients60.slice(0,3).join(", ")}${clients60.length>3?"...":""}` });
-  const sinMonto = trips.filter(t => t.date.startsWith(mk) && !t.amount);
+  const sinMonto = trips.filter(t => (t.date || "").startsWith(mk) && !t.amount);
   if (sinMonto.length) alerts.push({ type: "warn", msg: `${sinMonto.length} servicio(s) del mes sin monto asignado` });
   const tercVenc = outsourced.filter(o => !o.paid && o.dueDate && daysSince(o.dueDate) > 0);
-  if (tercVenc.length) alerts.push({ type: "red", msg: `${tercVenc.length} pago(s) vencidos a proveedores — ${fmt$(tercVenc.reduce((s,o)=>s+(o.providerAmount||0),0))}` });
+  if (tercVenc.length) alerts.push({ type: "red", msg: `${tercVenc.length} pago(s) vencidos a proveedores — ${fmt$(tercVenc.reduce((s,o)=>s+(Number(o.providerAmount) || 0),0))}` });
   const tercProx = outsourced.filter(o => !o.paid && o.dueDate && daysSince(o.dueDate)<=0 && daysSince(o.dueDate)>-7);
   if (tercProx.length) alerts.push({ type: "warn", msg: `${tercProx.length} pago(s) a proveedores vencen esta semana` });
-  const vFallas = vehicles.filter(v => { const li = inspections.filter(i=>i.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date))[0]; return li && li.issues && !li.resolved; });
+  const vFallas = vehicles.filter(v => { const li = inspections.filter(i=>i.vehicleId===v.id).sort((a,b)=>String(b.date || "").localeCompare(String(a.date || "")))[0]; return li && li.issues && !li.resolved; });
   if (vFallas.length) alerts.push({ type: "red", msg: `${vFallas.length} unidad(es) con falla activa: ${vFallas.map(v=>v.plates).join(", ")}` });
-  const vSinIns = vehicles.filter(v=>v.active).filter(v => { const li = inspections.filter(i=>i.vehicleId===v.id).sort((a,b)=>b.date.localeCompare(a.date))[0]; return !li || daysSince(li.date)>30; });
+  const vSinIns = vehicles.filter(v=>v.active).filter(v => { const li = inspections.filter(i=>i.vehicleId===v.id).sort((a,b)=>String(b.date || "").localeCompare(String(a.date || "")))[0]; return !li || daysSince(li.date)>30; });
   if (vSinIns.length) alerts.push({ type: "warn", msg: `${vSinIns.length} unidad(es) sin inspección >30 días: ${vSinIns.map(v=>v.plates).join(", ")}` });
-  const sinFactMes = trips.filter(t => t.date.startsWith(mk) && (t.billingStatus||"sin_facturar")==="sin_facturar" && !t.sinFactura && t.amount > 0);
+  const sinFactMes = trips.filter(t => (t.date || "").startsWith(mk) && (t.billingStatus||"sin_facturar")==="sin_facturar" && !t.sinFactura && t.amount > 0);
   if (sinFactMes.length) alerts.push({ type: "warn", msg: `${sinFactMes.length} servicio(s) del mes sin facturar` });
 
   // ── Anomaly detection: compare current month expenses to 3-month average ──
@@ -2259,7 +2259,7 @@ function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
     for (let i = 1; i <= 3; i++) {
       const pm = mesMenos(i);
       expenses.filter(e => e.month === pm).forEach(e => {
-        avgBycat[e.cat] = (avgBycat[e.cat] || 0) + e.amount / 3;
+        avgBycat[e.cat] = (avgBycat[e.cat] || 0) + (Number(e.amount) || 0) / 3;
       });
     }
     const curBycat = {};
@@ -2310,12 +2310,12 @@ function TrendChart({ trips, expenses, outsourced, selRS }) {
     const mk = mesMenos(i);
     const d = new Date(mk + "-15T12:00:00");
     const lbl = d.toLocaleDateString("es-MX",{month:"short",year:"2-digit"});
-    const ft = trips.filter(t => t.date.startsWith(mk) && (selRS==="all"||t.razonSocialId===selRS));
-    const fo = outsourced.filter(o => o.date.startsWith(mk) && (selRS==="all"||o.razonSocialId===selRS));
-    const ing = ft.reduce((s,t)=>s+(t.amount||0),0)+fo.reduce((s,o)=>s+(o.clientAmount||0),0);
-    const gas = expenses.filter(e=>e.month===mk&&(selRS==="all"||e.razonSocialId===selRS)).reduce((s,e)=>s+e.amount,0)
-      +ft.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a+x.amount,0),0)
-      +fo.reduce((s,o)=>s+(o.providerAmount||0),0);
+    const ft = trips.filter(t => (t.date || "").startsWith(mk) && (selRS==="all"||t.razonSocialId===selRS));
+    const fo = outsourced.filter(o => (o.date || "").startsWith(mk) && (selRS==="all"||o.razonSocialId===selRS));
+    const ing = ft.reduce((s,t)=>s+(Number(t.amount) || 0),0)+fo.reduce((s,o)=>s+(Number(o.clientAmount) || 0),0);
+    const gas = expenses.filter(e=>e.month===mk&&(selRS==="all"||e.razonSocialId===selRS)).reduce((s,e)=>s + (Number(e.amount) || 0),0)
+      +ft.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a + (Number(x.amount) || 0),0),0)
+      +fo.reduce((s,o)=>s+(Number(o.providerAmount) || 0),0);
     data.push({mes:lbl,Ingresos:Math.round(ing),Gastos:Math.round(gas),Utilidad:Math.round(ing-gas)});
   }
   const fmtK = v => v>=1000?`$${(v/1000).toFixed(0)}k`:`$${v}`;
@@ -2340,7 +2340,7 @@ function TrendChart({ trips, expenses, outsourced, selRS }) {
 function AgingCartera({ trips, selRS }) {
   const ft = trips.filter(t => (t.billingStatus||"sin_facturar")!=="pagado" && (t.billingStatus||"sin_facturar")!=="complemento" && t.amount>0 && (selRS==="all"||t.razonSocialId===selRS));
   const buckets = [{l:"0–30d",min:0,max:30,c:"var(--green)"},{l:"31–60d",min:31,max:60,c:"var(--amber)"},{l:"61–90d",min:61,max:90,c:"#f97316"},{l:"+90d",min:91,max:9999,c:"var(--red)"}];
-  const data = buckets.map(b => { const items=ft.filter(t=>{const d=daysSince(t.date);return d!==null&&d>=b.min&&d<=b.max;}); return {...b,count:items.length,total:items.reduce((s,t)=>s+t.amount,0)}; });
+  const data = buckets.map(b => { const items=ft.filter(t=>{const d=daysSince(t.date);return d!==null&&d>=b.min&&d<=b.max;}); return {...b,count:items.length,total:items.reduce((s,t)=>s + (Number(t.amount) || 0),0)}; });
   const grand = data.reduce((s,b)=>s+b.total,0);
   if (!grand) return null;
   return (
@@ -2366,24 +2366,24 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
   const [selRS, setSelRS] = useState("all");
   const mk = nowMon();
   const ft = trips.filter(t => selRS==="all"||t.razonSocialId===selRS);
-  const mt = ft.filter(t => t.date.startsWith(mk));
-  const outFilt = outsourced.filter(o => (selRS==="all"||o.razonSocialId===selRS)&&o.date.startsWith(mk));
-  const income = mt.reduce((s,t)=>s+(t.amount||0),0)+outFilt.reduce((s,o)=>s+(o.clientAmount||0),0);
-  const exps = expenses.filter(e=>e.month===mk&&(selRS==="all"||e.razonSocialId===selRS)).reduce((s,e)=>s+e.amount,0)
-    +mt.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a+x.amount,0),0)
-    +outFilt.reduce((s,o)=>s+(o.providerAmount||0),0);
+  const mt = ft.filter(t => (t.date || "").startsWith(mk));
+  const outFilt = outsourced.filter(o => (selRS==="all"||o.razonSocialId===selRS)&&(o.date || "").startsWith(mk));
+  const income = mt.reduce((s,t)=>s+(Number(t.amount) || 0),0)+outFilt.reduce((s,o)=>s+(Number(o.clientAmount) || 0),0);
+  const exps = expenses.filter(e=>e.month===mk&&(selRS==="all"||e.razonSocialId===selRS)).reduce((s,e)=>s + (Number(e.amount) || 0),0)
+    +mt.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a + (Number(x.amount) || 0),0),0)
+    +outFilt.reduce((s,o)=>s+(Number(o.providerAmount) || 0),0);
   const profit = income-exps;
-  const collected = mt.filter(t=>(t.billingStatus||"sin_facturar")==="complemento"||(t.billingStatus||"sin_facturar")==="pagado").reduce((s,t)=>s+(t.amount||0),0);
-  const dStats = drivers.map(d=>({...d,cnt:ft.filter(t=>t.driverId===d.id&&t.date.startsWith(mk)).length})).sort((a,b)=>b.cnt-a.cnt);
+  const collected = mt.filter(t=>(t.billingStatus||"sin_facturar")==="complemento"||(t.billingStatus||"sin_facturar")==="pagado").reduce((s,t)=>s+(Number(t.amount) || 0),0);
+  const dStats = drivers.map(d=>({...d,cnt:ft.filter(t=>t.driverId===d.id&&(t.date || "").startsWith(mk)).length})).sort((a,b)=>b.cnt-a.cnt);
   const maxC = dStats[0]?.cnt||1;
-  const clientStats = [...new Set(mt.map(t=>t.client).filter(Boolean))].map(c=>({c,total:mt.filter(t=>t.client===c).reduce((s,t)=>s+(t.amount||0),0),count:mt.filter(t=>t.client===c).length})).sort((a,b)=>b.total-a.total).slice(0,5);
+  const clientStats = [...new Set(mt.map(t=>t.client).filter(Boolean))].map(c=>({c,total:mt.filter(t=>t.client===c).reduce((s,t)=>s+(Number(t.amount) || 0),0),count:mt.filter(t=>t.client===c).length})).sort((a,b)=>b.total-a.total).slice(0,5);
 
   // Driver activity
   const todayStr = today();
   const yest = haceDias(1);
   const driversToday = new Set(trips.filter(t=>t.date===todayStr).map(t=>t.driverId));
   const driversYest = new Set(trips.filter(t=>t.date===yest).map(t=>t.driverId));
-  const lastTripDate = d => trips.filter(t=>t.driverId===d.id).sort((a,b)=>b.date.localeCompare(a.date))[0]?.date || null;
+  const lastTripDate = d => trips.filter(t=>t.driverId===d.id).sort((a,b)=>String(b.date || "").localeCompare(String(a.date || "")))[0]?.date || null;
   const daysSinceTrip = d => { const ld = lastTripDate(d); if (!ld) return null; const diff = (new Date(todayStr) - new Date(ld)) / 86400000; return Math.floor(diff); };
   const activeDrivers = drivers.filter(d => d.active !== false);
   const inactiveDrivers = activeDrivers.map(d => ({ ...d, days: daysSinceTrip(d) })).filter(d => d.days === null || d.days >= 1).sort((a,b) => (b.days??999) - (a.days??999));
@@ -2478,10 +2478,10 @@ function AdminDashboard({ trips, vehicles, drivers, expenses, outsourced, razone
         <div>
           <div className="stitle">Por Razón Social</div>
           {razones.filter(r=>r.active).map(r=>{
-            const rT=trips.filter(t=>t.razonSocialId===r.id&&t.date.startsWith(mk));
-            const rO=outsourced.filter(o=>o.razonSocialId===r.id&&o.date.startsWith(mk));
-            const rI=rT.reduce((s,t)=>s+(t.amount||0),0)+rO.reduce((s,o)=>s+(o.clientAmount||0),0);
-            const rE=expenses.filter(e=>e.razonSocialId===r.id&&e.month===mk).reduce((s,e)=>s+e.amount,0)+rT.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a+x.amount,0),0)+rO.reduce((s,o)=>s+(o.providerAmount||0),0);
+            const rT=trips.filter(t=>t.razonSocialId===r.id&&(t.date || "").startsWith(mk));
+            const rO=outsourced.filter(o=>o.razonSocialId===r.id&&(o.date || "").startsWith(mk));
+            const rI=rT.reduce((s,t)=>s+(Number(t.amount) || 0),0)+rO.reduce((s,o)=>s+(Number(o.clientAmount) || 0),0);
+            const rE=expenses.filter(e=>e.razonSocialId===r.id&&e.month===mk).reduce((s,e)=>s + (Number(e.amount) || 0),0)+rT.reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a + (Number(x.amount) || 0),0),0)+rO.reduce((s,o)=>s+(Number(o.providerAmount) || 0),0);
             const pct=rI>0?Math.round(((rI-rE)/rI)*100):0;
             return (
               <div key={r.id} className="card mb8">
@@ -2529,8 +2529,8 @@ function TripExpensesManager({ trip, onUpdate }) {
   };
   const markPaid = id => { const pm = payMethod; save(cur => ({ tripExpenses: (cur.tripExpenses || []).map(e => e.id === id ? { ...e, paid: true, paidDate: today(), paymentMethod: pm } : e) })); setPayingId(null); };
   const delE = id => { save(cur => ({ tripExpenses: (cur.tripExpenses || []).filter(e => e.id !== id) })); setDelEId(null); };
-  const total = expenses.reduce((s, e) => s + e.amount, 0);
-  const pending = expenses.filter(e => e.paid !== true).reduce((s, e) => s + e.amount, 0);
+  const total = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const pending = expenses.filter(e => e.paid !== true).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
       <div className="flex aic jb mb8">
@@ -2855,7 +2855,7 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
   const [ret, setRet] = useState(!!t.ivaRetention);
   const [saveTar, setSaveTar] = useState(true);
   const baseNum = parseFloat(base) || 0;
-  const extrasTotal = extras.reduce((s, e) => s + (e.amount || 0), 0);
+  const extrasTotal = extras.reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const total = baseNum + extrasTotal;
   const addExtra = () => {
     const a = parseFloat(newAmt);
@@ -2876,7 +2876,7 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
     <div className="fcol gap4" style={{ flex: 1 }}>
       {suggestion && (
         <div className="tsm" style={{ color: "var(--green)" }}>
-          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras || []).reduce((s, e) => s + e.amount, 0))}
+          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras || []).reduce((s, e) => s + (Number(e.amount) || 0), 0))}
           <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras || []); }}>Usar</button>
         </div>
       )}
@@ -2948,7 +2948,7 @@ function PatioPanel({ trips, vehicles, onUpdate }) {
           t.date >= r.date &&
           (String(t.client || "").trim().toLowerCase() === String(r.client || "").trim().toLowerCase() ||
            String(t.origin || "").trim().toLowerCase().includes(String(r.retiro.patio || "").trim().toLowerCase())))
-          .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 25);
+          .sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).slice(0, 25);
         return (
           <div key={r.id} className="card mb8" style={{ background: "var(--bg3)", padding: 10 }}>
             <div className="flex aic jb mb4 wrap gap4">
@@ -3098,8 +3098,8 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
   const clientList = [...new Set(trips.map(t => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const q = (filt.q || "").trim().toLowerCase();
   const filtered = trips.filter(t => {
-    if (filt.month === "__past") { if (t.date.slice(0,7) >= nowMon()) return false; }
-    else if (filt.month && !t.date.startsWith(filt.month)) return false;
+    if (filt.month === "__past") { if ((t.date || "").slice(0,7) >= nowMon()) return false; }
+    else if (filt.month && !(t.date || "").startsWith(filt.month)) return false;
     if (filt.client && t.client !== filt.client) return false;
     // Chofer/unidad: cuenta también si participó en un tramo (relevo / cambio de unidad)
     if (filt.driverId && !participa(t, filt.driverId)) return false;
@@ -3117,8 +3117,8 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
       if (!hay.includes(q)) return false;
     }
     return true;
-  }).sort((a, b) => b.date.localeCompare(a.date));
-  const totalInc = filtered.reduce((s, t) => s + (t.amount || 0), 0);
+  }).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const totalInc = filtered.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const abiertos = trips.filter(tripAbierto);
   return (
     <div className="ap">
@@ -3147,7 +3147,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
             <select value={filt.month} onChange={setF("month")}>
               <option value="">Todos los meses</option>
               <option value="__past">Solo meses anteriores</option>
-              {[...new Set(trips.map(t => t.date.slice(0,7)))].sort().reverse().map(m => (
+              {[...new Set(trips.map(t => (t.date || "").slice(0,7)))].sort().reverse().map(m => (
                 <option key={m} value={m}>{m === nowMon() ? m + " (actual)" : m}</option>
               ))}
             </select>
@@ -3179,7 +3179,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
           {filtered.map(t => {
             const d = gd(t.driverId); const v = gv(t.vehicleId);
             const editing = editAmt[t.id] !== undefined; const isExp = expandedId === t.id;
-            const te = (t.tripExpenses || []).reduce((s, e) => s + e.amount, 0);
+            const te = (t.tripExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
             const legs = t.legs || [];
             const allDriverNames = [d?.name || "—", ...legs.map(l => l.driverName || gd(l.driverId)?.name || "—")].filter((n, i, a) => a.indexOf(n) === i);
             return (
@@ -3298,7 +3298,7 @@ function AdminClientes({ trips, razones }) {
   const clients = [...new Set(ft.map(t => t.client).filter(Boolean))].sort().filter(c => c.toLowerCase().includes(search.toLowerCase()));
   const handleDownload = async (client) => {
     setDownloading(client);
-    const clientTrips = ft.filter(t => t.client === client && t.date.startsWith(dlMonth));
+    const clientTrips = ft.filter(t => t.client === client && (t.date || "").startsWith(dlMonth));
     if (!clientTrips.length) { alert("No hay viajes en ese mes para este cliente."); setDownloading(null); return; }
     await downloadClientZip(client, dlMonth, clientTrips);
     setDownloading(null);
@@ -3324,8 +3324,8 @@ function AdminClientes({ trips, razones }) {
         <div className="fcol gap12">
           {clients.map(client => {
             const ct = ft.filter(t => t.client === client);
-            const total = ct.reduce((s, t) => s + (t.amount || 0), 0);
-            const paid = ct.filter(t => (t.billingStatus || "sin_facturar") === "pagado").reduce((s, t) => s + t.amount, 0);
+            const total = ct.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+            const paid = ct.filter(t => (t.billingStatus || "sin_facturar") === "pagado").reduce((s, t) => s + (Number(t.amount) || 0), 0);
             const ov30 = ct.filter(t => (t.billingStatus || "sin_facturar") !== "pagado" && t.amount > 0 && daysSince(t.date) > 30);
             return (
               <div key={client} className="sec-card">
@@ -3349,7 +3349,7 @@ function AdminClientes({ trips, razones }) {
                     <table className="tbl">
                       <thead><tr><th>Fecha</th><th>Ruta</th><th>Monto</th><th>Estado</th><th>Folio</th><th>Días</th></tr></thead>
                       <tbody>
-                        {ct.sort((a, b) => b.date.localeCompare(a.date)).map(t => {
+                        {ct.sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).map(t => {
                           const dias = daysSince(t.date);
                           const venc = (t.billingStatus || "sin_facturar") !== "pagado" && t.amount > 0 && dias > 30;
                           return (
@@ -3387,14 +3387,14 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
     if (filt.provPaid === "paid" && !o.paid) return false;
     if (filt.provPaid === "unpaid" && o.paid) return false;
     if (filt.clientBs && (o.clientBillingStatus || "sin_facturar") !== filt.clientBs) return false;
-    if (filt.month && !o.date.startsWith(filt.month)) return false;
+    if (filt.month && !(o.date || "").startsWith(filt.month)) return false;
     return true;
-  }).sort((a, b) => b.date.localeCompare(a.date));
+  }).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   const unpaidProv = filtered.filter(o => !o.paid);
   const overdue = unpaidProv.filter(o => o.dueDate && daysSince(o.dueDate) > 0);
   const soon = unpaidProv.filter(o => o.dueDate && daysSince(o.dueDate) <= 0 && daysSince(o.dueDate) > -7);
-  const totalClientIncome = filtered.reduce((s, o) => s + (o.clientAmount || 0), 0);
-  const totalProvCost = filtered.reduce((s, o) => s + (o.providerAmount || 0), 0);
+  const totalClientIncome = filtered.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
+  const totalProvCost = filtered.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
   const margin = totalClientIncome - totalProvCost;
   return (
     <div className="ap">
@@ -3407,7 +3407,7 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
       )}
       {(overdue.length > 0 || soon.length > 0) && (
         <div className="g2 mb12">
-          {overdue.length > 0 && <div className="alert-box"><div style={{ fontWeight: 700, color: "var(--red)" }}>🔴 {overdue.length} pago(s) al proveedor vencidos</div><div style={{ fontSize: 20, fontWeight: 800, color: "var(--red)" }}>{fmt$(overdue.reduce((s, o) => s + o.providerAmount, 0))}</div></div>}
+          {overdue.length > 0 && <div className="alert-box"><div style={{ fontWeight: 700, color: "var(--red)" }}>🔴 {overdue.length} pago(s) al proveedor vencidos</div><div style={{ fontSize: 20, fontWeight: 800, color: "var(--red)" }}>{fmt$(overdue.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0))}</div></div>}
           {soon.length > 0 && <div className="warn-box"><div style={{ fontWeight: 700, color: "var(--amber)" }}>⚠ {soon.length} pago(s) por vencer esta semana</div></div>}
         </div>
       )}
@@ -3459,7 +3459,7 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
                 <div className="tercerizado-split">
                   <div style={{ background: "#22c55e0a", border: "1px solid #22c55e33", borderRadius: 6, padding: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--green)", marginBottom: 4, textTransform: "uppercase" }}>💚 Cobro al cliente</div>
-                    <div style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(o.clientAmount || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
+                    <div style={{ fontWeight: 700, color: "var(--green)" }}>{fmt$(Number(o.clientAmount) || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
                     {o.clientAmount > 0 && !o.clientSinFactura && <div className="tsm" style={{ color: "var(--green)" }}>Total: {fmt$(ivaTotal(o.clientAmount, o.clientSinFactura, o.clientIvaRetention))}{o.clientIvaRetention ? " (c/ret.)" : " +IVA"}</div>}
                     {o.clientSinFactura && <div className="tsm txt2">💵 Sin factura</div>}
                     <div className="tsm txt2">{o.client || "—"}</div>
@@ -3468,7 +3468,7 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
                   </div>
                   <div style={{ background: "#ef44440a", border: "1px solid #ef444433", borderRadius: 6, padding: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", marginBottom: 4, textTransform: "uppercase" }}>🔴 Costo del proveedor</div>
-                    <div style={{ fontWeight: 700, color: "var(--red)" }}>{fmt$(o.providerAmount || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
+                    <div style={{ fontWeight: 700, color: "var(--red)" }}>{fmt$(Number(o.providerAmount) || 0)} <span className="tsm" style={{ fontWeight: 400 }}>subtotal</span></div>
                     {o.providerAmount > 0 && !o.providerSinFactura && <div className="tsm" style={{ color: "var(--red)" }}>Total: {fmt$(ivaTotal(o.providerAmount, o.providerSinFactura, o.providerIvaRetention))}{o.providerIvaRetention ? " (c/ret.)" : " +IVA"}</div>}
                     {o.providerSinFactura && <div className="tsm txt2">💵 Sin factura</div>}
                     <div className="tsm txt2">{o.provider || "—"}</div>
@@ -3529,15 +3529,15 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
   const [mk, setMk] = useState(nowMon());
   const [selRS, setSelRS] = useState(razones[0]?.id || "");
   const [newE, setNewE] = useState({ cat: "Combustible", desc: "", amount: "" });
-  const mt = trips.filter(t => t.date.startsWith(mk) && t.razonSocialId === selRS);
-  const tripInc = mt.reduce((s, t) => s + (t.amount || 0), 0);
-  const outFiltered = outsourced.filter(o => o.razonSocialId === selRS && o.date.startsWith(mk));
-  const outInc = outFiltered.reduce((s, o) => s + (o.clientAmount || 0), 0);
+  const mt = trips.filter(t => (t.date || "").startsWith(mk) && t.razonSocialId === selRS);
+  const tripInc = mt.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+  const outFiltered = outsourced.filter(o => o.razonSocialId === selRS && (o.date || "").startsWith(mk));
+  const outInc = outFiltered.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
   const income = tripInc + outInc;
-  const tripExp = mt.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + x.amount, 0), 0);
-  const outExp = outFiltered.reduce((s, o) => s + (o.providerAmount || 0), 0);
+  const tripExp = mt.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (Number(x.amount) || 0), 0), 0);
+  const outExp = outFiltered.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
   const rsExps = expenses.filter(e => e.razonSocialId === selRS && e.month === mk);
-  const opExp = rsExps.reduce((s, e) => s + e.amount, 0);
+  const opExp = rsExps.reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const totalExps = opExp + tripExp + outExp;
   const profit = income - totalExps;
   const addExp = () => {
@@ -3547,7 +3547,7 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
     setNewE(p => ({ ...p, desc: "", amount: "" }));
   };
   const delExp = id => { if (!confirm("¿Eliminar este gasto operativo?")) return; onSaveExpenses(expenses.filter(e => e.id !== id), [id]); };
-  const byCat = EXP_CATS.map(c => ({ c, total: rsExps.filter(e => e.cat === c).reduce((s, e) => s + e.amount, 0) })).filter(x => x.total > 0);
+  const byCat = EXP_CATS.map(c => ({ c, total: rsExps.filter(e => e.cat === c).reduce((s, e) => s + (Number(e.amount) || 0), 0) })).filter(x => x.total > 0);
   const rs = razones.find(r => r.id === selRS);
   return (
     <div className="ap">
@@ -3564,7 +3564,7 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
         <button className="btn btn-g btn-sm" onClick={() => {
           const rows = [["Fecha","Tipo","Descripción","Categoría","Ingreso","Gasto"],
-            ...mt.map(t => [t.date, "Viaje propio", `${t.origin}→${t.destination} (${t.client})`, "Ingreso", t.amount||0, (t.tripExpenses||[]).reduce((s,e)=>s+e.amount,0)]),
+            ...mt.map(t => [t.date, "Viaje propio", `${t.origin}→${t.destination} (${t.client})`, "Ingreso", t.amount||0, (t.tripExpenses||[]).reduce((s,e)=>s + (Number(e.amount) || 0),0)]),
             ...rsExps.map(e => [e.createdAt?.slice(0,10)||mk, "Gasto operativo", e.desc, e.cat, 0, e.amount]),
             ...outFiltered.map(o => [o.date, "Tercerizado-ingreso", `${o.origin}→${o.destination} (${o.client})`, "Flete cobrado", o.clientAmount||0, 0]),
             ...outFiltered.map(o => [o.date, "Tercerizado-gasto", `Proveedor: ${o.provider}`, "Flete pagado", 0, o.providerAmount||0]),
@@ -3581,10 +3581,10 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
       {/* Pending alerts */}
       {(() => {
         const pendIncome = mt.filter(t => (t.billingStatus || "sin_facturar") !== "pagado" && t.amount > 0);
-        const pendClientOut = outFiltered.filter(o => (o.clientBillingStatus || "sin_facturar") !== "pagado" && (o.clientAmount || 0) > 0);
-        const pendProvOut = outFiltered.filter(o => !o.paid && (o.providerAmount || 0) > 0);
-        const pendIncomeTotal = pendIncome.reduce((s, t) => s + t.amount, 0) + pendClientOut.reduce((s, o) => s + (o.clientAmount || 0), 0);
-        const pendExpTotal = pendProvOut.reduce((s, o) => s + (o.providerAmount || 0), 0);
+        const pendClientOut = outFiltered.filter(o => (o.clientBillingStatus || "sin_facturar") !== "pagado" && (Number(o.clientAmount) || 0) > 0);
+        const pendProvOut = outFiltered.filter(o => !o.paid && (Number(o.providerAmount) || 0) > 0);
+        const pendIncomeTotal = pendIncome.reduce((s, t) => s + (Number(t.amount) || 0), 0) + pendClientOut.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
+        const pendExpTotal = pendProvOut.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
         if (!pendIncomeTotal && !pendExpTotal) return null;
         return (
           <div className="g2 mb12">
@@ -3645,7 +3645,7 @@ function AdminConductores({ trips, drivers, vehicles, razones }) {
     const dt = ft.filter(t => t.driverId === d.id);
     const byCargo = CARGO.map(c => ({ ...c, cnt: dt.filter(t => t.cargo === c.v).length }));
     const uvs = [...new Set(dt.map(t => t.vehicleId))].map(id => vehicles.find(v => v.id === id)?.plates).filter(Boolean);
-    return { ...d, tripCount: dt.length, monthCnt: dt.filter(t => t.date.startsWith(mk)).length, income: dt.reduce((s, t) => s + (t.amount || 0), 0), byCargo, uvs };
+    return { ...d, tripCount: dt.length, monthCnt: dt.filter(t => (t.date || "").startsWith(mk)).length, income: dt.reduce((s, t) => s + (Number(t.amount) || 0), 0), byCargo, uvs };
   });
   return (
     <div className="ap">
@@ -3681,8 +3681,8 @@ function AdminUnidades({ trips, inspections, vehicles }) {
   const mk = nowMon();
   const stats = vehicles.map(v => {
     const vt = trips.filter(t => t.vehicleId === v.id);
-    const vi = [...inspections.filter(i => i.vehicleId === v.id)].sort((a, b) => b.date.localeCompare(a.date));
-    return { ...v, tripTotal: vt.length, tripMonth: vt.filter(t => t.date.startsWith(mk)).length, income: vt.reduce((s, t) => s + (t.amount || 0), 0), lastIns: vi[0], insCount: vi.length };
+    const vi = [...inspections.filter(i => i.vehicleId === v.id)].sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    return { ...v, tripTotal: vt.length, tripMonth: vt.filter(t => (t.date || "").startsWith(mk)).length, income: vt.reduce((s, t) => s + (Number(t.amount) || 0), 0), lastIns: vi[0], insCount: vi.length };
   });
   return (
     <div className="ap">
@@ -4061,7 +4061,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
   const [expanded, setExpanded] = useState(false);
   const [saveTar, setSaveTar] = useState(true);
   const baseNum = parseFloat(base) || 0;
-  const extrasTotal = extras.reduce((s, e) => s + (e.amount||0), 0);
+  const extrasTotal = extras.reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const total = baseNum + extrasTotal;
   const addExtra = () => {
     const a = parseFloat(newAmt);
@@ -4092,7 +4092,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
       <div className="tsm txt2 mt2">🤝 {t.client}</div>
       {suggestion && !expanded && (
         <div className="tsm mt6" style={{ color: "var(--green)" }}>
-          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras||[]).reduce((s,e)=>s+e.amount,0))} (servicio {fmt$(suggestion.base)}{suggestion.extras?.length ? ` + ${suggestion.extras.length} extra(s)` : ""})
+          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras||[]).reduce((s,e)=>s + (Number(e.amount) || 0),0))} (servicio {fmt$(suggestion.base)}{suggestion.extras?.length ? ` + ${suggestion.extras.length} extra(s)` : ""})
           <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras||[]); setExpanded(true); }}>Usar</button>
         </div>
       )}
@@ -4225,7 +4225,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         </div>
         <div className="tsm txt2">{o.origin} → {o.destination} · {o.client || ""}</div>
         <div className="flex gap8 tsm mt4 wrap">
-          <span style={{ color: "var(--red)", fontWeight: 700 }}>{fmt$(o.providerAmount || 0)}</span>
+          <span style={{ color: "var(--red)", fontWeight: 700 }}>{fmt$(Number(o.providerAmount) || 0)}</span>
           {o.dueDate && <span className="txt2">Vence: {fmtDate(o.dueDate)}</span>}
           {o.providerInvoiceNum && <span className="txt2">Fact: {o.providerInvoiceNum}</span>}
         </div>
@@ -4348,7 +4348,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         title="Tercerizados — pendiente pagar al proveedor"
         color="br" icon="🔴"
         items={tercPend}
-        total={tercPend.reduce((s, o) => s + (o.providerAmount || 0), 0)}
+        total={tercPend.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0)}
         emptyMsg="Todos los proveedores están pagados"
         renderItem={tercRow}
       />
@@ -4373,7 +4373,7 @@ function AdminForecast({ trips, outsourced, expenses }) {
       estPay.setDate(estPay.getDate() + terms);
       const est = ymdMX(estPay);
       return est >= startStr && est < endStr;
-    }).reduce((s, t) => s + t.amount, 0);
+    }).reduce((s, t) => s + (Number(t.amount) || 0), 0);
     // Sin facturar (optimistic — might collect if invoiced now)
     const sinFact = w <= 2 ? trips.filter(t => {
       if ((t.billingStatus || "sin_facturar") !== "sin_facturar" || !t.amount) return false;
@@ -4381,16 +4381,16 @@ function AdminForecast({ trips, outsourced, expenses }) {
       estPay.setDate(estPay.getDate() + terms + 15);
       const est = ymdMX(estPay);
       return est >= startStr && est < endStr;
-    }).reduce((s, t) => s + t.amount, 0) : 0;
+    }).reduce((s, t) => s + (Number(t.amount) || 0), 0) : 0;
     // Expected payments: outsourced with due dates
     const pagos = outsourced.filter(o => !o.paid && o.dueDate && o.dueDate >= startStr && o.dueDate < endStr)
-      .reduce((s, o) => s + (o.providerAmount || 0), 0);
+      .reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
     weeks.push({ lbl, Cobros: Math.round(cobros), "Cobros potenciales": Math.round(sinFact), Pagos: Math.round(pagos), Neto: Math.round(cobros - pagos) });
   }
   // Pending totals
-  const totalPending = trips.filter(t => (t.billingStatus||"sin_facturar") === "facturado" && t.amount > 0).reduce((s,t)=>s+t.amount,0);
-  const totalSinFact = trips.filter(t => (t.billingStatus||"sin_facturar") === "sin_facturar" && t.amount > 0).reduce((s,t)=>s+t.amount,0);
-  const totalProvPend = outsourced.filter(o => !o.paid).reduce((s,o)=>s+(o.providerAmount||0),0);
+  const totalPending = trips.filter(t => (t.billingStatus||"sin_facturar") === "facturado" && t.amount > 0).reduce((s,t)=>s + (Number(t.amount) || 0),0);
+  const totalSinFact = trips.filter(t => (t.billingStatus||"sin_facturar") === "sin_facturar" && t.amount > 0).reduce((s,t)=>s + (Number(t.amount) || 0),0);
+  const totalProvPend = outsourced.filter(o => !o.paid).reduce((s,o)=>s+(Number(o.providerAmount) || 0),0);
   const netCashPos = totalPending - totalProvPend;
   return (
     <div className="ap">
@@ -4468,9 +4468,9 @@ function AdminGastosAnalisis({ trips, expenses, outsourced }) {
   const cats = [...new Set(expenses.map(e => e.cat))].sort();
   const data = months3.map(mk => {
     const row = { mes: mk.slice(5) };
-    cats.forEach(c => { row[c] = expenses.filter(e => e.month === mk && e.cat === c).reduce((s,e)=>s+e.amount,0); });
-    row["Gastos viaje"] = trips.filter(t=>t.date.startsWith(mk)).reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a+x.amount,0),0);
-    row["Tercerizados"] = outsourced.filter(o=>o.date.startsWith(mk)).reduce((s,o)=>s+(o.providerAmount||0),0);
+    cats.forEach(c => { row[c] = expenses.filter(e => e.month === mk && e.cat === c).reduce((s,e)=>s + (Number(e.amount) || 0),0); });
+    row["Gastos viaje"] = trips.filter(t=>(t.date || "").startsWith(mk)).reduce((s,t)=>s+(t.tripExpenses||[]).reduce((a,x)=>a + (Number(x.amount) || 0),0),0);
+    row["Tercerizados"] = outsourced.filter(o=>(o.date || "").startsWith(mk)).reduce((s,o)=>s+(Number(o.providerAmount) || 0),0);
     return row;
   }).reverse();
   const allCats = [...cats, "Gastos viaje", "Tercerizados"].filter(c => data.some(d => d[c] > 0));
@@ -4647,8 +4647,8 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
   // Unpaid trip expenses across all trips
   const pendingTripExp = trips.flatMap(t =>
     (t.tripExpenses || []).filter(e => e.paid !== true).map(e => ({ ...e, trip: t }))
-  ).sort((a, b) => a.trip.date.localeCompare(b.trip.date));
-  const totalPendingExp = pendingTripExp.reduce((s, e) => s + e.amount, 0);
+  ).sort((a, b) => String(a.trip.date || "").localeCompare(String(b.trip.date || "")));
+  const totalPendingExp = pendingTripExp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const providerNames = [...new Set(outsourced.map(o => o.provider).filter(Boolean))].sort()
     .filter(p => p.toLowerCase().includes(search.toLowerCase()));
   return (
@@ -4690,8 +4690,8 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
             <div className="fcol gap12">
             {providerNames.map(prov => {
               const po = outsourced.filter(o => o.provider === prov);
-            const total = po.reduce((s, o) => s + (o.providerAmount || 0), 0);
-            const paid = po.filter(o => o.paid).reduce((s, o) => s + (o.providerAmount || 0), 0);
+            const total = po.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
+            const paid = po.filter(o => o.paid).reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
             const pending = total - paid;
             const overdue = po.filter(o => !o.paid && o.dueDate && daysSince(o.dueDate) > 0);
             const provInfo = (providers||[]).find(p => p.name === prov);
@@ -4711,7 +4711,7 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
                   </div>
                 </div>
                 <div className="sec-body">
-                  {overdue.length > 0 && <div className="alert-box mb12"><span style={{ fontWeight: 700, color: "var(--red)" }}>⚠ {overdue.length} pago(s) vencido(s) — {fmt$(overdue.reduce((s, o) => s + (o.providerAmount || 0), 0))}</span></div>}
+                  {overdue.length > 0 && <div className="alert-box mb12"><span style={{ fontWeight: 700, color: "var(--red)" }}>⚠ {overdue.length} pago(s) vencido(s) — {fmt$(overdue.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0))}</span></div>}
                   <div className="flex gap8 mb12 wrap">
                     <span className="badge bg">Pagados: {po.filter(o => o.paid).length}</span>
                     <span className="badge ba">Pendientes: {po.filter(o => !o.paid).length}</span>
@@ -4721,7 +4721,7 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
                     <table className="tbl">
                       <thead><tr><th>Fecha</th><th>Ruta</th><th>Cliente</th><th>Monto</th><th>Estado</th><th>Vence</th><th></th></tr></thead>
                       <tbody>
-                        {po.sort((a, b) => b.date.localeCompare(a.date)).map(o => {
+                        {po.sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).map(o => {
                           const dias = o.dueDate ? daysSince(o.dueDate) : null;
                           const venc = !o.paid && dias !== null && dias > 0;
                           return (
@@ -4729,7 +4729,7 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
                               <td style={{ whiteSpace: "nowrap" }}>{fmtDate(o.date)}</td>
                               <td className="tsm">{o.origin} → {o.destination}</td>
                               <td className="tsm">{o.client || "—"}</td>
-                              <td><strong style={{ color: "var(--red)" }}>{fmt$(o.providerAmount || 0)}</strong></td>
+                              <td><strong style={{ color: "var(--red)" }}>{fmt$(Number(o.providerAmount) || 0)}</strong></td>
                               <td><span className={`badge ${o.paid ? "bg" : venc ? "br" : "ba"}`}>{o.paid ? "✓ Pagado" : venc ? `Vencido ${dias}d` : "Pendiente"}</span></td>
                               <td className="tsm txt2">{o.dueDate ? fmtDate(o.dueDate) : "—"}</td>
                               <td>{!o.paid ? (
@@ -4757,9 +4757,9 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
 
 function AdminComplementos({ trips, onUpdate }) {
   const pending = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado")
-    .sort((a, b) => a.date.localeCompare(b.date));
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
   const done = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "pagado")
-    .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).slice(0, 30);
   const [showDone, setShowDone] = useState(false);
   const totalPending = pending.reduce((s, t) => s + totalTrip(t), 0);
   const save = (id, patch) => onUpdate(id, patch);
@@ -4833,10 +4833,10 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
   const clientNames = [...new Set(tarifario.map(t => t.clientName))].sort();
   const filtered = tarifario.filter(t =>
     (selClient === "all" || t.clientName === selClient) &&
-    (t.clientName.toLowerCase().includes(search.toLowerCase()) ||
-     t.origin.toLowerCase().includes(search.toLowerCase()) ||
-     t.destination.toLowerCase().includes(search.toLowerCase()))
-  ).sort((a, b) => a.clientName.localeCompare(b.clientName) || a.origin.localeCompare(b.origin));
+    ((t.clientName || "").toLowerCase().includes(search.toLowerCase()) ||
+     (t.origin || "").toLowerCase().includes(search.toLowerCase()) ||
+     (t.destination || "").toLowerCase().includes(search.toLowerCase()))
+  ).sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")) || String(a.origin || "").localeCompare(String(b.origin || "")));
 
   // Import from trip history — find client+route combinations not yet in tarifario
   const importFromHistory = () => {
@@ -4883,7 +4883,7 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
       ) : (
         <div className="fcol gap8">
           {filtered.map(tar => {
-            const extTotal = (tar.extras||[]).reduce((s,e) => s+e.amount, 0);
+            const extTotal = (tar.extras||[]).reduce((s,e) => s + (Number(e.amount) || 0), 0);
             const total = tar.base + extTotal;
             return (
               <div key={tar.id} className="card">
@@ -4910,7 +4910,7 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
                         <summary className="btn btn-g btn-sm" style={{ cursor: "pointer" }}>📈 Historial ({tar.history.length})</summary>
                         <div className="fcol gap2 mt4">
                           {[...tar.history].reverse().slice(0,5).map((h,i) => (
-                            <div key={i} className="tsm txt2">{fmtDate(h.date)}: {fmt$(h.base + (h.extras||[]).reduce((s,e)=>s+e.amount,0))}</div>
+                            <div key={i} className="tsm txt2">{fmtDate(h.date)}: {fmt$(h.base + (h.extras||[]).reduce((s,e)=>s + (Number(e.amount) || 0),0))}</div>
                           ))}
                         </div>
                       </details>
@@ -4949,33 +4949,33 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
     const ingTerc = pOut.filter(o => !String(o.notes || "").toUpperCase().includes("SOLO COSTO"))
       .reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
     const ingresos = ingViajes + ingTerc;
-    const gastosGen = expenses.filter(e => (e.month || e.date?.slice(0,7)) === p).reduce((s, e) => s + (e.amount||0), 0);
-    const gastosViaje = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    const gastosGen = expenses.filter(e => (e.month || e.date?.slice(0,7)) === p).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const gastosViaje = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).reduce((ss, e) => ss + (Number(e.amount) || 0), 0), 0);
     const tercerizados = pOut.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
     const totalGastos = gastosGen + gastosViaje + tercerizados;
     const utilidad = ingresos - totalGastos;
     // Cobros y pagos efectivos del periodo
     const cobrado = pTrips.filter(t => t.billingStatus === "pagado").reduce((s, t) => s + totalTrip(t), 0);
     const porCobrar = pTrips.filter(t => t.billingStatus !== "pagado" && t.amount > 0).reduce((s, t) => s + totalTrip(t), 0);
-    const pagadoProv = outsourced.filter(o => (o.date||"").startsWith(p) && o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
-    const porPagarProv = outsourced.filter(o => (o.date||"").startsWith(p) && !o.paid).reduce((s, o) => s + (o.providerAmount||0), 0);
-    const pagadoGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid === true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
-    const porPagarGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    const pagadoProv = outsourced.filter(o => (o.date||"").startsWith(p) && o.paid).reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
+    const porPagarProv = outsourced.filter(o => (o.date||"").startsWith(p) && !o.paid).reduce((s, o) => s + (Number(o.providerAmount) || 0), 0);
+    const pagadoGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid === true).reduce((ss, e) => ss + (Number(e.amount) || 0), 0), 0);
+    const porPagarGV = pTrips.reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (Number(e.amount) || 0), 0), 0);
     return { ingresos, ingViajes, ingTerc, gastosGen, gastosViaje, tercerizados, totalGastos, utilidad, cobrado, porCobrar, pagadoProv, porPagarProv, pagadoGV, porPagarGV, nTrips: pTrips.length, nOut: pOut.length };
   };
 
   // Outstanding from ALL past periods (not current month)
   const pastPendingReceivable = trips
-    .filter(t => !t.date.startsWith(curMon) && t.billingStatus !== "pagado" && (t.amount||0) > 0)
+    .filter(t => !(t.date || "").startsWith(curMon) && t.billingStatus !== "pagado" && (Number(t.amount) || 0) > 0)
     .reduce((s, t) => s + totalTrip(t), 0);
   const pastPendingPayable = outsourced
     .filter(o => !(o.date||"").startsWith(curMon) && !o.paid)
-    .reduce((s, o) => s + (o.providerAmount||0), 0)
-    + trips.filter(t => !t.date.startsWith(curMon))
-    .reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (e.amount||0), 0), 0);
+    .reduce((s, o) => s + (Number(o.providerAmount) || 0), 0)
+    + trips.filter(t => !(t.date || "").startsWith(curMon))
+    .reduce((s, t) => s + (t.tripExpenses||[]).filter(e => e.paid !== true).reduce((ss, e) => ss + (Number(e.amount) || 0), 0), 0);
 
   // Total distributed so far across all periods
-  const totalDistributed = distributions.reduce((s, d) => s + (d.pagos||[]).reduce((ss, p) => ss + (p.pagado ? (p.montosPagados||[]).reduce((sss, x) => sss + x.monto, 0) : 0), 0), 0);
+  const totalDistributed = distributions.reduce((s, d) => s + (d.pagos||[]).reduce((ss, p) => ss + (p.pagado ? (p.montosPagados||[]).reduce((sss, x) => sss + (Number(x.monto) || 0), 0) : 0), 0), 0);
 
   const calc = calcPeriodo(periodo);
   const dist = distributions.find(d => d.periodo === periodo);
@@ -5002,7 +5002,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
     onUpdDistribution(payModal.distId, cur => ({ pagos: (cur.pagos || []).map(p => {
       if (p.socioId !== socioId) return p;
       const nuevos = [...(p.montosPagados||[]), pago];
-      const totalPagado = nuevos.reduce((s, x) => s + x.monto, 0);
+      const totalPagado = nuevos.reduce((s, x) => s + (Number(x.monto) || 0), 0);
       return { ...p, montosPagados: nuevos, pendiente: p.utilidad - totalPagado, pagado: totalPagado >= p.utilidad };
     }) }));
     setPayModal(null); setPayAmt(""); setPayDate(today());
@@ -5085,7 +5085,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
             <div className="card" style={{ background: "#22c55e0a", border: "1px solid var(--green)" }}>
               <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 8 }}>✓ Periodo cerrado — {fmtDate(dist.fechaCierre)}</div>
               {dist.pagos.map(p => {
-                const pagado = (p.montosPagados||[]).reduce((s,x)=>s+x.monto,0);
+                const pagado = (p.montosPagados||[]).reduce((s,x)=>s + (Number(x.monto) || 0),0);
                 return (
                   <div key={p.socioId} className="flex aic jb" style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
                     <div>
@@ -5125,7 +5125,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
           {distributions.length === 0 ? <Empty title="Sin periodos cerrados" sub="Cierra un periodo en la pestaña Periodo para ver el historial" /> : (
             <div className="fcol gap12">
               {[...distributions].sort((a,b)=>b.periodo.localeCompare(a.periodo)).map(d => {
-                const totalPagado = (d.pagos||[]).reduce((s,p) => s + (p.montosPagados||[]).reduce((ss,x)=>ss+x.monto,0), 0);
+                const totalPagado = (d.pagos||[]).reduce((s,p) => s + (p.montosPagados||[]).reduce((ss,x)=>ss + (Number(x.monto) || 0),0), 0);
                 const totalUtilidad = (d.pagos||[]).reduce((s,p)=>s+p.utilidad,0);
                 return (
                   <div key={d.id} className="card">
@@ -5140,7 +5140,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
                       </div>
                     </div>
                     {(d.pagos||[]).map(p => {
-                      const pagado = (p.montosPagados||[]).reduce((s,x)=>s+x.monto,0);
+                      const pagado = (p.montosPagados||[]).reduce((s,x)=>s + (Number(x.monto) || 0),0);
                       const pendiente = Math.max(0, p.utilidad - pagado);
                       return (
                         <div key={p.socioId}>
@@ -5212,8 +5212,8 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
 
           {/* List of uncollected past trips */}
           <div className="stitle" style={{ fontSize: 14 }}>Viajes sin cobrar de periodos anteriores</div>
-          {trips.filter(t => !t.date.startsWith(curMon) && t.billingStatus !== "pagado" && (t.amount||0) > 0)
-            .sort((a,b)=>a.date.localeCompare(b.date))
+          {trips.filter(t => !(t.date || "").startsWith(curMon) && t.billingStatus !== "pagado" && (Number(t.amount) || 0) > 0)
+            .sort((a,b)=>String(a.date || "").localeCompare(String(b.date || "")))
             .map(t => (
               <div key={t.id} className="card mb6 flex aic jb">
                 <div>
@@ -5506,14 +5506,14 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
 
   const mt = trips.filter(t => (t.date || "").startsWith(mk));
   const mo = outsourced.filter(o => (o.date || "").startsWith(mk));
-  const ingMes = mt.reduce((s, t) => s + (t.amount || 0), 0) + mo.reduce((s, o) => s + (o.clientAmount || 0), 0);
-  const costMes = mt.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (x.amount || 0), 0), 0)
-    + mo.reduce((s, o) => s + (o.providerAmount || 0), 0)
-    + expenses.filter(e => e.month === mk).reduce((s, e) => s + (e.amount || 0), 0);
+  const ingMes = mt.reduce((s, t) => s + (Number(t.amount) || 0), 0) + mo.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0);
+  const costMes = mt.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (Number(x.amount) || 0), 0), 0)
+    + mo.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0)
+    + expenses.filter(e => e.month === mk).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const utilMes = ingMes - costMes;
 
   // Cuentas por cobrar (global, total a depositar c/IVA) por antigüedad
-  const porCobrar = trips.filter(t => (t.amount || 0) > 0 && ["facturado", "sin_factura"].includes(t.billingStatus));
+  const porCobrar = trips.filter(t => (Number(t.amount) || 0) > 0 && ["facturado", "sin_factura"].includes(t.billingStatus));
   const cxcTotal = porCobrar.reduce((s, t) => s + totalTrip(t), 0);
   const buckets = [
     { l: "0-15 días", min: 0, max: 15, c: "var(--green)" },
@@ -5534,24 +5534,24 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
     const o6 = outsourced.filter(o => (o.date || "").startsWith(k));
     return {
       mes: k.slice(2),
-      Ingresos: Math.round(t6.reduce((s, t) => s + (t.amount || 0), 0) + o6.reduce((s, o) => s + (o.clientAmount || 0), 0)),
-      Costos: Math.round(t6.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (x.amount || 0), 0), 0)
-        + o6.reduce((s, o) => s + (o.providerAmount || 0), 0)
-        + expenses.filter(e => e.month === k).reduce((s, e) => s + (e.amount || 0), 0)),
+      Ingresos: Math.round(t6.reduce((s, t) => s + (Number(t.amount) || 0), 0) + o6.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0)),
+      Costos: Math.round(t6.reduce((s, t) => s + (t.tripExpenses || []).reduce((a, x) => a + (Number(x.amount) || 0), 0), 0)
+        + o6.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0)
+        + expenses.filter(e => e.month === k).reduce((s, e) => s + (Number(e.amount) || 0), 0)),
     };
   });
 
   const topCli = [...new Set([...mt.map(t => t.client), ...mo.map(o => o.client)].filter(Boolean))]
-    .map(c => ({ c, tot: mt.filter(t => t.client === c).reduce((s, t) => s + (t.amount || 0), 0) + mo.filter(o => o.client === c).reduce((s, o) => s + (o.clientAmount || 0), 0) }))
+    .map(c => ({ c, tot: mt.filter(t => t.client === c).reduce((s, t) => s + (Number(t.amount) || 0), 0) + mo.filter(o => o.client === c).reduce((s, o) => s + (Number(o.clientAmount) || 0), 0) }))
     .sort((a, b) => b.tot - a.tot).slice(0, 6);
   const maxCli = Math.max(...topCli.map(x => x.tot), 1);
 
   // Pendientes operativos (foco del día)
   const sinMonto = trips.filter(t => !(t.amount > 0)).length;
-  const porFacturar = trips.filter(t => (t.amount || 0) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar" && !t.sinFactura);
+  const porFacturar = trips.filter(t => (Number(t.amount) || 0) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar" && !t.sinFactura);
   const ppdSinComp = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado").length;
-  const tercSinPagar = outsourced.filter(o => !o.paid && (o.providerAmount || 0) > 0);
-  const margenTerc = mo.reduce((s, o) => s + (o.clientAmount || 0) - (o.providerAmount || 0), 0);
+  const tercSinPagar = outsourced.filter(o => !o.paid && (Number(o.providerAmount) || 0) > 0);
+  const margenTerc = mo.reduce((s, o) => s + (Number(o.clientAmount) || 0) - (Number(o.providerAmount) || 0), 0);
 
   const Barra = ({ pct, color }) => (
     <div style={{ background: "var(--bg3)", borderRadius: 4, height: 10, flex: 1 }}>
@@ -5617,9 +5617,9 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
         <div className="flex gap8 wrap">
           {trips.filter(tripAbierto).length > 0 && <span className="badge ba">🟠 Viajes abiertos: {trips.filter(tripAbierto).length} (en ruta / a medias / en patio)</span>}
           <span className="badge bgr">Sin monto: {sinMonto}</span>
-          <span className="badge ba">Por facturar: {porFacturar.length} ({fmt$(porFacturar.reduce((s, t) => s + (t.amount || 0), 0))})</span>
+          <span className="badge ba">Por facturar: {porFacturar.length} ({fmt$(porFacturar.reduce((s, t) => s + (Number(t.amount) || 0), 0))})</span>
           <span className="badge bb">PPD sin complemento: {ppdSinComp}</span>
-          <span className="badge br">Debemos a proveedores: {fmt$(tercSinPagar.reduce((s, o) => s + (o.providerAmount || 0), 0))} ({tercSinPagar.length})</span>
+          <span className="badge br">Debemos a proveedores: {fmt$(tercSinPagar.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0))} ({tercSinPagar.length})</span>
         </div>
       </div>
 
@@ -5668,8 +5668,8 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
         <div className="card">
           <div className="stitle" style={{ fontSize: 15 }}>🔗 Tercerizados de {mk}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--green)" }}>{fmt$(mo.reduce((s, o) => s + (o.clientAmount || 0), 0))}</div><div className="kl">Ingreso</div></div>
-            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--red)" }}>{fmt$(mo.reduce((s, o) => s + (o.providerAmount || 0), 0))}</div><div className="kl">Costo</div></div>
+            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--green)" }}>{fmt$(mo.reduce((s, o) => s + (Number(o.clientAmount) || 0), 0))}</div><div className="kl">Ingreso</div></div>
+            <div className="kpi"><div className="kv" style={{ fontSize: 22, color: "var(--red)" }}>{fmt$(mo.reduce((s, o) => s + (Number(o.providerAmount) || 0), 0))}</div><div className="kl">Costo</div></div>
             <div className="kpi"><div className="kv" style={{ fontSize: 22, color: margenTerc >= 0 ? "var(--cyan)" : "var(--red)" }}>{fmt$(margenTerc)}</div><div className="kl">Margen</div></div>
           </div>
           <div className="tsm txt2 mt8">{mo.length} servicio(s) tercerizado(s) en el mes</div>
