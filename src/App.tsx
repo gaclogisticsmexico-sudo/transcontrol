@@ -63,9 +63,12 @@ const FIREBASE_CONFIG = {
   appId: "1:136222746567:web:d045051138d79918545be2"
 };
 // email (minúsculas) → rol + nombre
+// "modos": usuarios con varios papeles (Cristian es socio y también maneja):
+// entran como el primer modo y cambian con la barra "Modo" de arriba. Para el
+// modo chofer se usa su registro de conductor (driverId, o el nombre si no está).
 const USUARIOS = {
   "alan@transcontrol.com":         { rol: "admin",  nombre: "Alan Garcia" },
-  "cris@transcontrol.com":         { rol: "coord",  nombre: "Cristian Ramos" },
+  "cris@transcontrol.com":         { rol: "admin",  nombre: "Cristian Ramos", modos: ["admin", "coord", "chofer"], driverId: "krjrdhdx", driverName: "CRISTIAN RAMOS GARCIA" },
   "javier@transcontrol.com":       { rol: "chofer", nombre: "Javier Ramos Roman",              id: "d1" },
   "edgar@transcontrol.com":        { rol: "chofer", nombre: "Edgar Sebastian Garcia Hernandez", id: "d2" },
   "tonatiuh@transcontrol.com":     { rol: "chofer", nombre: "Tonatiuh Sanchez Lopez",           id: "d3" },
@@ -779,6 +782,16 @@ function OutsourcedForm({ razones, clients, providers, onSave, onCancel }) {
         <button className="btn btn-a" onClick={submit}><Ico path={IC.check} size={16} /> Registrar Tercerizado</button>
         {onCancel && <button className="btn btn-g" onClick={onCancel}>Cancelar</button>}
       </div>
+    </div>
+  );
+}
+
+function ModeBar({ modos, actual, onChange }) {
+  const L = { admin: "🛠 Admin", coord: "📅 Coordinador", chofer: "🚛 Chofer" };
+  return (
+    <div style={{ background: "var(--bg3)", borderBottom: "1px solid var(--border)", padding: "6px 16px", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <span className="tsm txt2">Modo:</span>
+      {modos.map(m => <button key={m} className={`pill-tab ${actual === m ? "act" : ""}`} style={{ padding: "3px 12px" }} onClick={() => onChange(m)}>{L[m] || m}</button>)}
     </div>
   );
 }
@@ -5736,6 +5749,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState(null); const [driver, setDriver] = useState(null);
   const [pendingDriverSelect, setPendingDriverSelect] = useState(null);
+  const [userInfo, setUserInfo] = useState(null);   // entrada de USUARIOS del que inició sesión
+  const [modo, setModo] = useState(null);           // modo elegido por usuarios con varios papeles
   const [tripsAll, setTrips] = useState([]); const [inspections, setInspections] = useState([]);
   const [vehicles, setVehicles] = useState(DEF_VEHICLES); const [driversAll, setDrivers] = useState(DEF_DRIVERS);
   const [expenses, setExpenses] = useState([]); const [outsourced, setOutsourced] = useState([]);
@@ -5770,9 +5785,10 @@ export default function App() {
     const cleanupData = () => { dataUnsubs.forEach(u => { try { u && u(); } catch {} }); dataUnsubs = []; };
     const unsub = onAuthStateChanged(auth, async (user) => {
       cleanupData();
-      if (!user) { setLoading(false); setRole(null); setDriver(null); return; }
+      if (!user) { setLoading(false); setRole(null); setDriver(null); setUserInfo(null); setModo(null); return; }
       const info = USUARIOS[user.email?.toLowerCase()];
       if (!info) { await signOut(auth); setLoading(false); return; }
+      setUserInfo(info); setModo(null);
       // Sincronizacion en tiempo real: cada coleccion escucha su doc en Firestore, asi las pestanas/
       // dispositivos se mantienen al dia y dejan de sobrescribirse entre si (una pestana con datos
       // viejos ya no pisa lo que guardo otra). Es ADITIVO: si fallara, la carga inicial de abajo
@@ -5933,28 +5949,44 @@ export default function App() {
     }} />
   );
 
-  if (role === "chofer") return (
-    <ChoferApp checadas={checadas} gpsPos={gpsPos} onChecar={addChecada} driver={driver} trips={trips} inspections={inspections}
+  // Usuarios con varios papeles: la barra "Modo" cambia entre admin / coord / chofer.
+  const modos = userInfo?.modos;
+  const vista = modos && modo ? modo : role;
+  const cambiarModo = m => {
+    if (m === "chofer") {
+      const d = driversAll.find(x => x.id === userInfo.driverId) || driversAll.find(x => normTxt(x.name) === normTxt(userInfo.driverName || userInfo.nombre));
+      if (!d) { alert(`No encontré tu registro de chofer (${userInfo.driverName || userInfo.nombre}). Revísalo en Config → Conductores.`); return; }
+      setDriver(d);
+    }
+    setModo(m);
+  };
+  const barra = modos ? <ModeBar modos={modos} actual={vista} onChange={cambiarModo} /> : null;
+
+  // Un chofer nunca cae a la vista de admin, aunque su perfil aún no cargue.
+  if (vista === "chofer" && !driver) return <div className="page"><div className="txt2">Cargando tu perfil de chofer...</div></div>;
+  if (vista === "chofer") return (
+    <>{barra}<ChoferApp checadas={checadas} gpsPos={gpsPos} onChecar={addChecada} driver={driver} trips={trips} inspections={inspections}
       vehicles={vehicles.filter(v => v.active)} drivers={drivers} razones={razones.filter(r => r.active)}
       clients={clients} instructions={instructions} instant={instant}
       statusRequests={statusRequests.filter(r => r.driverId === driver?.id)}
       onAdd={addTrip} onUpdate={updTrip} onAddIns={addIns} onAck={ackInstruction}
       onUpdateInstant={updateInstant} onUpdStatusRequest={updStatusRequest}
-      onLogout={() => signOut(auth)} />
+      onLogout={() => signOut(auth)} /></>
   );
 
-  if (role === "coord") return (
-    <CoordApp vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} providers={providers} trips={trips}
+  if (vista === "coord") return (
+    <>{barra}<CoordApp vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} providers={providers} trips={trips}
       outsourced={outsourced} schedule={schedule} instructions={instructions} inspections={inspections} instant={instant}
       onSaveSchedule={saveSchedule} onSaveInstructions={saveInstructions}
       onUpdateInstant={updateInstant} onSaveVehicles={saveVehicles} onSaveClients={saveClients} onSaveProviders={saveProviders}
       onAddOut={addOut} onUpdateOut={updOut} onDeleteOut={delOut} onUpdate={updTrip}
       onAddStatusRequest={addStatusRequest}
-      onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} />
+      onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} /></>
   );
 
+  if (vista !== "admin") return <LoginScreen />;
   return (
-    <AdminApp checadas={checadas} gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
+    <>{barra}<AdminApp checadas={checadas} gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
       socios={socios} distributions={distributions} tarifario={tarifario}
@@ -5966,6 +5998,6 @@ export default function App() {
       onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
       onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)}
-      verPrueba={verPrueba} nPrueba={nPrueba} onToggleVerPrueba={() => setVerPrueba(p => !p)} />
+      verPrueba={verPrueba} nPrueba={nPrueba} onToggleVerPrueba={() => setVerPrueba(p => !p)} /></>
   );
 }
