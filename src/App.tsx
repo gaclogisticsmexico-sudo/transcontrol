@@ -141,6 +141,11 @@ async function txDoc(k, fn, def) {
     });
   } catch (e) { avisoError(k, e); return null; }
 }
+// Solo la ÚLTIMA escritura propia de cada clave actualiza el estado local con su
+// resultado (si dos respuestas llegan en desorden, la vieja no pisa a la nueva;
+// el onSnapshot trae lo demás). Devuelve true si se guardó.
+const SEQ = {};
+const escrito = (setter, k, my) => r => { if (r == null) return false; if (my === SEQ[k]) setter(r); return true; };
 // Cambio por id sobre la copia fresca. El patch puede ser una función
 // (item fresco → campos) para cosas como agregar un tramo sin pisar los del bot.
 const upd = (arr, id, p) => {
@@ -5888,13 +5893,13 @@ export default function App() {
 
   // Todas las escrituras pasan por txDoc (transacción sobre el doc fresco) y el
   // estado local se actualiza con lo que quedó guardado. Devuelven true/false.
-  const ok = setter => r => { if (r == null) return false; setter(r); return true; };
+  const ok = (setter, k) => { const my = (SEQ[k] = (SEQ[k] || 0) + 1); return escrito(setter, k, my); };
   const arrOps = (k, setter, base, def = []) => ({
-    add: item => txDoc(k, a => [...(a || []), item], def).then(ok(setter)),
-    upd: (id, p) => txDoc(k, a => upd(a || [], id, p), def).then(ok(setter)),
-    del: id => txDoc(k, a => (a || []).filter(x => x.id !== id), def).then(ok(setter)),
+    add: item => { const done = ok(setter, k); return txDoc(k, a => [...(a || []), item], def).then(done); },
+    upd: (id, p) => { const done = ok(setter, k); return txDoc(k, a => upd(a || [], id, p), def).then(done); },
+    del: id => { const done = ok(setter, k); return txDoc(k, a => (a || []).filter(x => x.id !== id), def).then(done); },
     // arreglo completo armado en un componente → mezcla por id; borra solo removeIds
-    save: (next, removeIds) => txDoc(k, a => mergeById(base, next, a, removeIds), def).then(ok(setter)),
+    save: (next, removeIds) => { const done = ok(setter, k); return txDoc(k, a => mergeById(base, next, a, removeIds), def).then(done); },
   });
   const T = arrOps("tr:trips", setTrips, tripsAll);
   const CH = arrOps("tr:checadas", setChecadas, checadasAll);
@@ -5933,8 +5938,8 @@ export default function App() {
   const ackInstruction = id => INSTR.upd(id, { ack: true });
   // tr:instant es un objeto (quién está ocupado): se mezcla campo por campo, así
   // dos choferes que inician viaje a la vez no se pisan.
-  const updateInstant = u => txDoc("tr:instant", fresh => merge3(instant, u, fresh || { vehicles: [], drivers: [] }), { vehicles: [], drivers: [] })
-    .then(ok(v => setInstant(v || { vehicles: [], drivers: [] })));
+  const updateInstant = u => { const done = ok(v => setInstant(v || { vehicles: [], drivers: [] }), "tr:instant");
+    return txDoc("tr:instant", fresh => merge3(instant, u, fresh || { vehicles: [], drivers: [] }), { vehicles: [], drivers: [] }).then(done); };
   const addStatusRequest = SREQ.add;
   const updStatusRequest = SREQ.upd;
   const saveSocios = SOC.save;
@@ -5943,13 +5948,13 @@ export default function App() {
   const updDistribution = DIST.upd;
   const saveTarifario = TAR.save;
   const delTarifa = TAR.del;
-  const upsertTarifa = (clientName, origin, destination, base, extras) => txDoc("tr:tarifario", fresh => {
+  const upsertTarifa = (clientName, origin, destination, base, extras) => { const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
     const prev = fresh || [];
     const key = `${clientName}||${origin}||${destination}`.toLowerCase();
     const existing = prev.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
     const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
     return existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
-  }, []).then(ok(v => setTarifario(v || [])));
+  }, []).then(done); };
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
