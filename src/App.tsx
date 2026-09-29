@@ -397,6 +397,51 @@ const entregasDe = (trips, id) => (trips || []).filter(t => t.retiroId === id);
 const diasDesde = f => { try { return Math.max(0, Math.floor((new Date(today()) - new Date(f)) / 86400000)); } catch { return 0; } };
 const rotulo = t => `${fmtDate(t.date)} · ${t.client || "sin cliente"} · ${t.origin || "?"}`;
 
+// Quién / con qué unidad va el servicio AHORA: el del último tramo (igual que el
+// bot: un relevo o un cambio de unidad por WhatsApp agrega un tramo).
+const conductorActual = t => { const l = (t?.legs || []).filter(x => x.driverId); return l.length ? l[l.length - 1].driverId : t?.driverId; };
+const unidadActual = t => { const l = (t?.legs || []).filter(x => x.vehicleId); return l.length ? l[l.length - 1].vehicleId : t?.vehicleId; };
+const participa = (t, driverId) => t.driverId === driverId || (t.legs || []).some(l => l.driverId === driverId);
+const usaUnidad = (t, vehicleId) => t.vehicleId === vehicleId || (t.legs || []).some(l => l.vehicleId === vehicleId);
+const patioAbierto = t => !!(t.retiro && !t.retiro.cerrado);
+// Abierto = todavía no se entrega: en ruta (WhatsApp), a medias o mercancía en patio.
+const tripAbierto = t => t.tripStatus === "en_ruta" || t.tripStatus === "en_curso" || patioAbierto(t);
+const normTxt = x => String(x || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
+// Folio de carta porte normalizado igual que el bot (folio_cp_norm): sin "CP-",
+// mayúsculas; vacío o "0" no cuentan. Un docNum puede traer varios ("1341, 1404").
+const folioCP = f => { const x = String(f || "").replace(/^\s*(cp|c\.p\.|carta\s*porte)\s*[-#:]?\s*/i, "").trim().toUpperCase(); return ["", "0", "N/A", "NA", "-"].includes(x) ? "" : x; };
+const foliosDe = docNum => String(docNum || "").split(/[,/;]| y /i).map(folioCP).filter(Boolean);
+const tripsConFolio = (trips, docNum, excluirId) => {
+  const fs = foliosDe(docNum);
+  return fs.length ? (trips || []).filter(t => t.id !== excluirId && foliosDe(t.docNum).some(x => fs.includes(x))) : [];
+};
+const cpPendiente = t => !foliosDe(t.docNum).length && (t.cpPendiente || (t.tripStatus || "completado") === "completado");
+const hhmm = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const ESTADO_VIAJE = {
+  completado: ["bg", "✅ Completado"], en_ruta: ["bb", "🚚 En ruta"], en_curso: ["br", "🔄 A medias"],
+  en_patio: ["ba", "📦 En patio"], cancelado: ["bgr", "✖ Cancelado"],
+};
+function TripStatusBadge({ t }) {
+  const e = ESTADO_VIAJE[t.tripStatus];
+  if (!e || t.tripStatus === "completado") return null;
+  if (t.tripStatus === "en_patio" && t.retiro) return null;   // el retiro trae su propio badge
+  return <span className={`badge ${e[0]}`}>{e[1]}</span>;
+}
+// Banderitas de captura: lo que falta arreglar antes del cierre.
+function TripFlags({ t, razones }) {
+  const sinRS = !t.razonSocialId || (razones && razones.length > 0 && !razones.some(r => r.id === t.razonSocialId));
+  const st = { fontSize: 10 };
+  return (
+    <>
+      {cpPendiente(t) && <span className="badge br" style={st} title="Sin folio de carta porte">📄 CP pendiente</span>}
+      {sinRS && <span className="badge ba" style={st} title="Sin razón social">🏢 Sin RS</span>}
+      {t.canal === "whatsapp" && <span className="badge bg" style={st} title="Capturado por WhatsApp">💬 WhatsApp</span>}
+      {t.folioWeb && <span className="badge bb" style={st} title="Folio de cotización web">🌐 {t.folioWeb}</span>}
+      {t.prueba && <span className="badge bpu" style={st}>🧪 Prueba</span>}
+    </>
+  );
+}
+
 function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer, gpsOrigin, gpsDestination, gpsVehicleId, trips, onSave, onCancel }) {
   const [f, setF] = useState({
     date: today(), origin: gpsOrigin || "", destination: gpsDestination || "", departTime: "", arriveTime: "",
@@ -896,9 +941,11 @@ function DriverStatusPanel({ driver, instant, vehicles, onUpdateInstant, onGPSTr
   );
 }
 
-function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd }) {
+function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, instructions, availableRelays, vehicles, instant, statusRequests, onNav, onAck, onRelay, onUpdateInstant, onUpdStatusRequest, onGPSTripEnd, onCloseTrip }) {
   const td = today(); const mk = nowMon();
-  const my = trips.filter(t => t.driverId === driver.id);
+  const my = trips.filter(t => participa(t, driver.id));
+  // Servicios que este chofer lleva AHORA (iniciados por WhatsApp, sin cerrar)
+  const enRuta = trips.filter(t => t.tripStatus === "en_ruta" && conductorActual(t) === driver.id);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack);
   const lastIns = [...inspections.filter(i => i.driverId === driver.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
@@ -1096,6 +1143,28 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
           </div>
         </div>
       ))}
+      {enRuta.length > 0 && (
+        <div className="mb16">
+          <div className="stitle" style={{ color: "var(--blue)" }}>🚚 Tus servicios en ruta ({enRuta.length})</div>
+          {enRuta.map(t => {
+            const v = vehicles.find(x => x.id === unidadActual(t));
+            return (
+              <div key={t.id} className="card mb8" style={{ borderLeft: "3px solid var(--blue)" }}>
+                <div className="flex aic jb mb4 wrap gap4">
+                  <div style={{ fontWeight: 700 }}>{t.origin || "?"} → {t.destination || "?"}</div>
+                  <span className="tsm txt2">{fmtDate(t.date)}{t.departTime ? ` · salió ${t.departTime}` : ""}</span>
+                </div>
+                <div className="tsm txt2 mb8">
+                  {t.client && <span>🤝 {t.client} · </span>}{v && <span>🚛 {v.plates}</span>}
+                  {t.canal === "whatsapp" && <span> · 💬 iniciado por WhatsApp</span>}
+                </div>
+                {onCloseTrip && <button className="btn btn-gr btn-sm" style={{ width: "100%", justifyContent: "center" }} onClick={() => onCloseTrip(t)}>✅ Ya lo entregué — cerrar</button>}
+                <div className="tsm txt2 mt4">Si quedó a medias o en patio, avísalo por WhatsApp al bot o al coordinador.</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {/* Driver status panel */}
       {instant && onUpdateInstant && (
         <DriverStatusPanel driver={driver} instant={instant} vehicles={vehicles} onUpdateInstant={onUpdateInstant} onGPSTripEnd={onGPSTripEnd} />
@@ -1137,7 +1206,7 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
           return legs.length ? (legs[legs.length - 1].driverName || "otro chofer") : (t.driverName || "el chofer inicial");
         };
         const tarjeta = (t, isOwn) => {
-          const v = vehicles.find(x => x.id === t.vehicleId);
+          const v = vehicles.find(x => x.id === unidadActual(t));
           const d = dias(t.date);
           const lugar = ultimoLugar(t);
           return (
@@ -1161,8 +1230,8 @@ function ChoferHome({ checadas, gpsPos, onChecar, driver, trips, inspections, in
             </div>
           );
         };
-        const mios = availableRelays.filter(t => t.driverId === driver?.id);
-        const otros = availableRelays.filter(t => t.driverId !== driver?.id);
+        const mios = availableRelays.filter(t => conductorActual(t) === driver?.id);
+        const otros = availableRelays.filter(t => conductorActual(t) !== driver?.id);
         return (
           <>
             {mios.length > 0 && (
@@ -1237,7 +1306,8 @@ function ChoferMisViajes({ driver, trips, vehicles }) {
                 </div>
                 <div className="flex gap6 aic">
                   {isRelay && <span className="badge ba">🔄 Relevo</span>}
-                  {t.tripStatus === "en_curso" && <span className="badge br">En curso</span>}
+                  <TripStatusBadge t={t} />
+                  {patioAbierto(t) && <span className="badge ba">📦 En patio</span>}
                   <CargoBadge v={t.cargo} />
                   <span style={{ color: "var(--txt2)", fontSize: 13 }}>{isExp ? "▲" : "▼"}</span>
                 </div>
@@ -1351,7 +1421,7 @@ function ChoferMisInspecciones({ driver, inspections, vehicles }) {
 
 function TripContinueForm({ trip, vehicles, currentDriver, onSave, onCancel }) {
   const av = vehicles.filter(v => v.active);
-  const isOwn = trip.driverId === currentDriver?.id;
+  const isOwn = conductorActual(trip) === currentDriver?.id;
   const [f, setF] = useState({
     vehicleId: av[0]?.id || "",
     date: today(),
@@ -1442,14 +1512,23 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 3000); };
   const av = vehicles.filter(v => v.active);
   const pending = instructions.filter(i => i.driverId === driver.id && !i.ack).length;
-  // Trips in progress available to continue — includes own trips AND others'
-  // Excludes trips where this driver already added a relay leg
+  // Viajes a medias: TODOS los "en_curso". Si el último tramo es de este chofer
+  // (él lo dejó a medias) sale como "tuyo"; si es de otro, como "puedes continuar".
+  // Antes se excluían los viajes donde el chofer ya tenía un tramo, y su propio
+  // viaje a medias desaparecía de su pantalla.
   // OJO: solo "en_curso" (relevo de chofer). Un retiro ("en_patio") NO se
   // continua con un tramo: se cierra con una o varias entregas aparte.
-  const availableRelays = trips.filter(t =>
-    t.tripStatus === "en_curso" &&
-    !(t.legs || []).find(l => l.driverId === driver?.id)
-  );
+  const availableRelays = trips.filter(t => t.tripStatus === "en_curso");
+  // Cerrar desde la app un servicio que el chofer inició por WhatsApp
+  const cerrarServicio = async t => {
+    if (!confirm(`¿Ya entregaste?\n${t.client || ""} · ${t.origin || "?"} → ${t.destination || "?"}\n\nSe marcará como ENTREGADO.`)) return false;
+    const ok = await onUpdate(t.id, cur => {
+      if (cur.tripStatus !== "en_ruta") throw new Error("Ese servicio ya no está en ruta (ya lo cerraron).");
+      return { tripStatus: "completado", arriveTime: cur.arriveTime || hhmm() };
+    });
+    if (ok) showToast("Servicio cerrado");
+    return ok;
+  };
   const navTabs = [
     { id: "home", icon: IC.home, lbl: "Inicio" }, { id: "nuevo", icon: IC.plus, lbl: "Viaje" },
     { id: "inspeccion", icon: IC.wrench, lbl: "Inspección" }, { id: "viajes", icon: IC.list, lbl: "Mis Viajes" },
@@ -1468,7 +1547,7 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
       </div>
       {toast && <div className="toast">✓ {toast}</div>}
       {view === "home" && <ChoferHome checadas={checadas} gpsPos={gpsPos} onChecar={onChecar} driver={driver} trips={trips} inspections={inspections} instructions={instructions}
-        availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests}
+        availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests} onCloseTrip={cerrarServicio}
         onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
         onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest}
         onGPSTripEnd={gpsData => { setGpsTrip(gpsData); setView("nuevo"); }} />}
@@ -2827,6 +2906,70 @@ function PatioPanel({ trips, vehicles, onUpdate }) {
   );
 }
 
+// Editor (admin) de los datos base de un viaje: corrige lo que capturó el chofer
+// o el bot y permite cerrar un viaje que se quedó "en ruta" o "a medias".
+function TripBaseEditor({ t, trips, drivers, vehicles, razones, clients, onUpdate, onDone }) {
+  const [f, setF] = useState({
+    client: t.client || "", date: t.date || "", origin: t.origin || "", destination: t.destination || "",
+    driverId: t.driverId || "", vehicleId: t.vehicleId || "", razonSocialId: t.razonSocialId || "",
+    docNum: t.docNum || "", tripStatus: t.tripStatus || "completado", leftAt: t.leftAt || "",
+  });
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const ETQ = { client: "Cliente", date: "Fecha", origin: "Origen", destination: "Destino", driverId: "Chofer (inicio)",
+    vehicleId: "Unidad (inicio)", razonSocialId: "Razón social", docNum: "Carta porte", tripStatus: "Estado", leftAt: "Dónde quedó" };
+  const ver = (k, v) => k === "driverId" ? (drivers.find(d => d.id === v)?.name || v || "—")
+    : k === "vehicleId" ? (vehicles.find(x => x.id === v)?.plates || v || "—")
+    : k === "razonSocialId" ? (razones.find(r => r.id === v)?.short || (v ? v : "Sin RS"))
+    : k === "tripStatus" ? (ESTADO_VIAJE[v]?.[1] || v) : (v || "—");
+  const guardar = async () => {
+    if (!f.date || !f.client.trim() || !f.origin.trim() || !f.destination.trim()) { alert("Fecha, cliente, origen y destino no pueden quedar vacíos."); return; }
+    const dup = tripsConFolio(trips, f.docNum, t.id);
+    if (dup.length) { alert(`La carta porte ${foliosDe(f.docNum).join(", ")} ya está en otro viaje:\n${dup.map(rotulo).join("\n")}\n\nNo se guardó: corrige el folio.`); return; }
+    if ((f.tripStatus === "en_curso" || f.tripStatus === "en_patio") && !f.leftAt.trim()) { alert("Para dejarlo a medias o en patio anota dónde quedó."); return; }
+    const patch = {};
+    ["client", "date", "origin", "destination", "driverId", "vehicleId", "razonSocialId", "docNum", "tripStatus"].forEach(k => {
+      const v = String(f[k] || "").trim();
+      if (v !== String(t[k] || (k === "tripStatus" ? "completado" : "")).trim()) patch[k] = v;
+    });
+    if (f.tripStatus !== "completado" && f.leftAt.trim() !== (t.leftAt || "")) patch.leftAt = f.leftAt.trim();
+    if (!Object.keys(patch).length) { onDone(); return; }
+    const lista = Object.keys(patch).map(k => `• ${ETQ[k]}: ${ver(k, t[k])} → ${ver(k, patch[k])}`).join("\n");
+    if (!confirm(`¿Guardar estos cambios en el viaje ${rotulo(t)}?\n\n${lista}`)) return;
+    if (patch.driverId !== undefined) patch.driverName = drivers.find(d => d.id === patch.driverId)?.name || "";
+    if (patch.docNum !== undefined && foliosDe(patch.docNum).length) patch.cpPendiente = false;
+    if (patch.tripStatus === "en_patio" && !patioAbierto(t)) patch.retiro = { ...(t.retiro || {}), patio: f.leftAt.trim(), partidas: t.retiro?.partidas ?? null, cerrado: false };
+    if (patch.tripStatus === "completado" && !t.arriveTime && t.tripStatus === "en_ruta") patch.arriveTime = hhmm();
+    if (await onUpdate(t.id, patch)) onDone();
+  };
+  const estados = Object.keys(ESTADO_VIAJE).filter(k => k !== "cancelado" || t.tripStatus === "cancelado");
+  return (
+    <div className="card mb8" style={{ background: "var(--bg3)", border: "1px solid var(--amber)" }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>✏️ Editar datos del viaje</div>
+      <div className="g2 mb8">
+        <Field label="Fecha"><input type="date" value={f.date} onChange={set("date")} /></Field>
+        <Field label="Cliente">
+          <input list={`cli-${t.id}`} value={f.client} onChange={set("client")} />
+          <datalist id={`cli-${t.id}`}>{(clients || []).map(c => <option key={c.id} value={c.name} />)}</datalist>
+        </Field>
+        <Field label="Origen"><input value={f.origin} onChange={set("origin")} /></Field>
+        <Field label="Destino"><input value={f.destination} onChange={set("destination")} /></Field>
+        <Field label="Chofer (inicio)"><select value={f.driverId} onChange={set("driverId")}><option value="">—</option>{drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
+        <Field label="Unidad (inicio)"><select value={f.vehicleId} onChange={set("vehicleId")}><option value="">—</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.plates}</option>)}</select></Field>
+        <Field label="Razón social"><select value={f.razonSocialId} onChange={set("razonSocialId")}><option value="">Sin RS</option>{razones.map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field>
+        <Field label="No. carta porte"><input value={f.docNum} onChange={set("docNum")} placeholder="Ej: 1587" /></Field>
+        <Field label="Estado del viaje"><select value={f.tripStatus} onChange={set("tripStatus")}>{estados.map(k => <option key={k} value={k}>{ESTADO_VIAJE[k][1]}</option>)}</select></Field>
+        {(f.tripStatus === "en_curso" || f.tripStatus === "en_patio") && <Field label="¿Dónde quedó?"><input value={f.leftAt} onChange={set("leftAt")} placeholder="Patio / bodega" /></Field>}
+      </div>
+      {(t.legs || []).length > 0 && <div className="tsm txt2 mb8">Chofer y unidad son los del INICIO; los tramos (relevos) no se modifican aquí.</div>}
+      {f.tripStatus === "completado" && patioAbierto(t) && <div className="tsm mb8" style={{ color: "var(--amber)" }}>Ojo: la mercancía sigue en patio; ciérrala con "Ya salió todo" en el panel del patio.</div>}
+      <div className="flex gap8">
+        <button className="btn btn-a btn-sm" onClick={guardar}>✓ Guardar cambios</button>
+        <button className="btn btn-g btn-sm" onClick={onDone}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, clients, onUpdate, onDelete, onAdd, tarifario, onUpsertTarifa }) {
   // $/km real por placa (cargas Edenred 30 dias / km GPS 30 dias); si una unidad
   // no tiene cargas, se usa el promedio de la flota. Sirve para estimar el
@@ -2854,8 +2997,9 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
     return out;
   }, [gpsKm, cargasComb, vehicles]);
 
-  const [filt, setFilt] = useState({ month: "", client: "", driverId: "", vehicleId: "", rsId: "", status: "", q: "" });
+  const [filt, setFilt] = useState({ month: "", client: "", driverId: "", vehicleId: "", rsId: "", status: "", trip: "", q: "" });
   const [editAmt, setEditAmt] = useState({});
+  const [editTripId, setEditTripId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [delTripId, setDelTripId] = useState(null);
@@ -2867,10 +3011,17 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
     if (filt.month === "__past") { if (t.date.slice(0,7) >= nowMon()) return false; }
     else if (filt.month && !t.date.startsWith(filt.month)) return false;
     if (filt.client && t.client !== filt.client) return false;
-    if (filt.driverId && t.driverId !== filt.driverId) return false;
-    if (filt.vehicleId && t.vehicleId !== filt.vehicleId) return false;
+    // Chofer/unidad: cuenta también si participó en un tramo (relevo / cambio de unidad)
+    if (filt.driverId && !participa(t, filt.driverId)) return false;
+    if (filt.vehicleId && !usaUnidad(t, filt.vehicleId)) return false;
     if (filt.rsId && t.razonSocialId !== filt.rsId) return false;
     if (filt.status && (t.billingStatus || "sin_facturar") !== filt.status) return false;
+    if (filt.trip === "abiertos" && !tripAbierto(t)) return false;
+    if ((filt.trip === "en_ruta" || filt.trip === "en_curso") && t.tripStatus !== filt.trip) return false;
+    if (filt.trip === "en_patio" && !patioAbierto(t)) return false;
+    if (filt.trip === "completado" && (t.tripStatus || "completado") !== "completado") return false;
+    if (filt.trip === "cp_pend" && !cpPendiente(t)) return false;
+    if (filt.trip === "sin_rs" && t.razonSocialId && razones.some(r => r.id === t.razonSocialId)) return false;
     if (q) {
       const hay = [t.client, t.origin, t.destination, t.docNum, t.invoiceNumber, t.notes, gd(t.driverId)?.name, gv(t.vehicleId)?.plates, String(t.amount || ""), t.amount ? totalTrip(t).toFixed(2) : "", (t.amountExtras || []).map(e => e.desc).join(" ")].map(x => (x || "").toLowerCase()).join(" ");
       if (!hay.includes(q)) return false;
@@ -2878,9 +3029,16 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date));
   const totalInc = filtered.reduce((s, t) => s + (t.amount || 0), 0);
+  const abiertos = trips.filter(tripAbierto);
   return (
     <div className="ap">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>Registro de Viajes</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Nuevo</button></div>
+      {abiertos.length > 0 && (
+        <div className="warn-box mb12 flex aic jb wrap gap8">
+          <span className="tsm">🟠 <strong>{abiertos.length} viaje(s) abierto(s)</strong> · {abiertos.filter(t => t.tripStatus === "en_ruta").length} en ruta · {abiertos.filter(t => t.tripStatus === "en_curso").length} a medias · {abiertos.filter(patioAbierto).length} en patio</span>
+          <button className="btn btn-g btn-sm" onClick={() => setFilt(p => ({ ...p, trip: "abiertos" }))}>Ver abiertos</button>
+        </div>
+      )}
       <PatioPanel trips={trips} vehicles={vehicles} onUpdate={onUpdate} />
       {showForm && (
         <div className="card mb16">
@@ -2909,6 +3067,16 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
           <div style={{ flex: 1, minWidth: 120 }}><Field label="Unidad"><select value={filt.vehicleId} onChange={setF("vehicleId")}><option value="">Todas</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.plates}</option>)}</select></Field></div>
           <div style={{ flex: 1, minWidth: 120 }}><Field label="R. Social"><select value={filt.rsId} onChange={setF("rsId")}><option value="">Todas</option>{razones.map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field></div>
           <div style={{ flex: 1, minWidth: 120 }}><Field label="Estado"><select value={filt.status} onChange={setF("status")}><option value="">Todos</option>{BILLING.map(b => <option key={b.v} value={b.v}>{b.l}</option>)}</select></Field></div>
+          <div style={{ flex: 1, minWidth: 120 }}><Field label="Viaje"><select value={filt.trip} onChange={setF("trip")}>
+            <option value="">Todos</option>
+            <option value="abiertos">🟠 Abiertos (sin entregar)</option>
+            <option value="en_ruta">🚚 En ruta</option>
+            <option value="en_curso">🔄 A medias</option>
+            <option value="en_patio">📦 En patio</option>
+            <option value="completado">✅ Completados</option>
+            <option value="cp_pend">📄 CP pendiente</option>
+            <option value="sin_rs">🏢 Sin razón social</option>
+          </select></Field></div>
         </div>
         <div className="flex gap12 mt8 wrap tsm">
           <span className="txt2">{filtered.length} viajes</span>
@@ -2931,7 +3099,8 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
                     <span className="tsm txt2">{fmtDate(t.date)}</span>
                     <CargoBadge v={t.cargo} /><BillingBadge v={t.billingStatus || "sin_facturar"} mp={t.metodoPago} />
                     <RSBadge id={t.razonSocialId} razones={razones} />
-                    {t.tripStatus === "en_curso" && <span className="badge br">🔄 En curso</span>}
+                    <TripStatusBadge t={t} />
+                    <TripFlags t={t} razones={razones} />
                     {t.retiro && !t.retiro.cerrado && <span className="badge ba">📦 En patio</span>}
                     {t.retiro && t.retiro.cerrado && <span className="badge bg">📦 Retiro cerrado</span>}
                     {t.retiroId && <span className="badge bgr">📦 Entrega de un retiro</span>}
@@ -2945,9 +3114,13 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
                       <button className="btn btn-g btn-sm" onClick={() => setDelTripId(null)}>No</button>
                     </div>
                   ) : (
-                    <button className="btn btn-g btn-sm" onClick={() => setDelTripId(t.id)}><Ico path={IC.trash} size={14} /></button>
+                    <div className="flex gap4">
+                      <button className="btn btn-g btn-sm" title="Editar datos del viaje" onClick={() => setEditTripId(editTripId === t.id ? null : t.id)}>✏️</button>
+                      <button className="btn btn-g btn-sm" onClick={() => setDelTripId(t.id)}><Ico path={IC.trash} size={14} /></button>
+                    </div>
                   )}
                 </div>
+                {editTripId === t.id && <TripBaseEditor t={t} trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} clients={clients} onUpdate={onUpdate} onDone={() => setEditTripId(null)} />}
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.origin} → {t.destination}</div>
                 <div className="flex gap8 wrap tsm txt2 mb6">
                   {t.client && <span>🤝 {t.client}</span>}
@@ -5335,6 +5508,7 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
       <div className="card mb12">
         <div className="stitle" style={{ fontSize: 15 }}>⚡ Pendientes de hoy</div>
         <div className="flex gap8 wrap">
+          {trips.filter(tripAbierto).length > 0 && <span className="badge ba">🟠 Viajes abiertos: {trips.filter(tripAbierto).length} (en ruta / a medias / en patio)</span>}
           <span className="badge bgr">Sin monto: {sinMonto}</span>
           <span className="badge ba">Por facturar: {porFacturar.length} ({fmt$(porFacturar.reduce((s, t) => s + (t.amount || 0), 0))})</span>
           <span className="badge bb">PPD sin complemento: {ppdSinComp}</span>
