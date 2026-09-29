@@ -2235,7 +2235,8 @@ function exportCSV(rows, filename) {
 function SmartAlerts({ trips, outsourced, inspections, vehicles, expenses }) {
   const alerts = [];
   const mk = nowMon();
-  const sinCompl = trips.filter(t => t.billingStatus === "pagado" && t.paidDate && daysSince(t.paidDate) > 5);
+  // Solo PPD pagados a los que les falta el complemento (PUE y efectivo no llevan)
+  const sinCompl = trips.filter(t => t.billingStatus === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido && t.paidDate && daysSince(t.paidDate) > 5);
   if (sinCompl.length) alerts.push({ type: "warn", msg: `${sinCompl.length} servicio(s) pagado(s) sin complemento SAT (>5 días)` });
   const clients60 = [...new Set(trips.filter(t => (t.billingStatus||"sin_facturar") !== "pagado" && (t.billingStatus||"sin_facturar") !== "complemento" && t.amount > 0 && daysSince(t.date) > 60).map(t => t.client))];
   if (clients60.length) alerts.push({ type: "red", msg: `${clients60.length} cliente(s) con adeudo >60 días: ${clients60.slice(0,3).join(", ")}${clients60.length>3?"...":""}` });
@@ -5678,8 +5679,15 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
-  const pendCount = trips.filter(t => t.date.startsWith(mk) && ["sin_facturar","facturado","pagado"].includes(t.billingStatus || "sin_facturar") && t.amount > 0).length
-    + outsourced.filter(o => o.date.startsWith(mk) && !o.paid).length;
+  // Pendientes del Cierre del mes: sin monto, por facturar, efectivo o facturado
+  // por cobrar, o PPD pagado sin complemento. Ya NO cuenta los pagados completos.
+  const pendCount = trips.filter(t => {
+    if (!(t.date || "").startsWith(mk)) return false;
+    const b = t.billingStatus || "sin_facturar";
+    if (!(Number(t.amount) > 0)) return true;
+    if (["sin_facturar", "sin_factura", "facturado"].includes(b)) return true;
+    return b === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido;
+  }).length + outsourced.filter(o => (o.date || "").startsWith(mk) && !o.paid).length;
   const tabs = [
     { id: "panel", l: "📈 Panel" },
     { id: "dashboard", l: "📊 Dashboard" },
