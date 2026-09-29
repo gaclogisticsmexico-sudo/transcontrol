@@ -1892,7 +1892,7 @@ function CoordSchedule({ vehicles, drivers, razones, schedule, instructions, onS
     }
     setShowForm(false);
   };
-  const delSlot = id => onSaveSchedule(schedule.filter(s => s.id !== id), [id]);
+  const delSlot = id => { if (!confirm("¿Eliminar esta asignación? (la instrucción ya enviada al chofer no se borra)")) return; onSaveSchedule(schedule.filter(s => s.id !== id), [id]); };
   return (
     <div className="page">
       <div className="flex aic jb mb12"><div className="stitle" style={{ margin: 0 }}>📅 Programar Unidades</div><button className="btn btn-a btn-sm" onClick={() => setShowForm(!showForm)}><Ico path={IC.plus} size={14} /> Asignar</button></div>
@@ -1968,7 +1968,7 @@ function CoordInstructions({ vehicles, drivers, razones, instructions, onSaveIns
     onSaveInstructions([...instructions, { ...f, id: genId(), ack: false, vehiclePlate: v?.plates, createdAt: new Date().toISOString() }]);
     setShowForm(false);
   };
-  const del = id => onSaveInstructions(instructions.filter(i => i.id !== id), [id]);
+  const del = id => { if (!confirm("¿Eliminar esta instrucción? El chofer ya no la verá.")) return; onSaveInstructions(instructions.filter(i => i.id !== id), [id]); };
   const sorted = [...instructions].sort(porFechaDesc);
   return (
     <div className="page">
@@ -2987,7 +2987,7 @@ function PatioPanel({ trips, vehicles, onUpdate }) {
               </select>
               <button className="btn btn-a btn-sm" disabled={!enlazando[r.id]}
                 onClick={() => { onUpdate(enlazando[r.id], { retiroId: r.id }); setEnlazando(p => ({ ...p, [r.id]: "" })); }}>Enlazar</button>
-              <button className="btn btn-gr btn-sm" onClick={() => cerrar(r)}>✓ Ya salió todo</button>
+              <button className="btn btn-gr btn-sm" onClick={() => { if (confirm(`¿Ya salió TODA la mercancía de ${r.client || "este retiro"} (${r.retiro.patio})?\nEl retiro se cierra y deja de aparecer como pendiente. Se puede reabrir desde Viajes.`)) cerrar(r); }}>✓ Ya salió todo</button>
             </div>
           </div>
         );
@@ -3193,6 +3193,10 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
                     <TripFlags t={t} razones={razones} />
                     {t.retiro && !t.retiro.cerrado && <span className="badge ba">📦 En patio</span>}
                     {t.retiro && t.retiro.cerrado && <span className="badge bg">📦 Retiro cerrado</span>}
+                    {t.retiro && t.retiro.cerrado && (
+                      <button className="btn btn-g btn-sm" style={{ fontSize: 11 }} title="Reabrir: la mercancía vuelve a 'en patio'"
+                        onClick={() => { if (confirm("¿Reabrir este retiro? Volverá a la lista de mercancía en el patio.")) onUpdate(t.id, cur => ({ retiro: { ...(cur.retiro || {}), cerrado: false, cerradoAt: null } })); }}>↩ Reabrir</button>
+                    )}
                     {t.retiroId && <span className="badge bgr">📦 Entrega de un retiro</span>}
                     {legs.length > 0 && <span className="badge ba">🔄 {legs.length + 1} tramos</span>}
                     {t.paymentMethod && <span className="badge bgr">{t.paymentMethod === "efectivo" ? "💵" : "🏦"} {t.paymentMethod}</span>}
@@ -3542,7 +3546,7 @@ function AdminFinanciero({ trips, expenses, outsourced, razones, onSaveExpenses 
     onSaveExpenses([...expenses, { id: genId(), razonSocialId: selRS, month: mk, cat: newE.cat, desc: newE.desc, amount: amt, createdAt: new Date().toISOString() }]);
     setNewE(p => ({ ...p, desc: "", amount: "" }));
   };
-  const delExp = id => onSaveExpenses(expenses.filter(e => e.id !== id), [id]);
+  const delExp = id => { if (!confirm("¿Eliminar este gasto operativo?")) return; onSaveExpenses(expenses.filter(e => e.id !== id), [id]); };
   const byCat = EXP_CATS.map(c => ({ c, total: rsExps.filter(e => e.cat === c).reduce((s, e) => s + e.amount, 0) })).filter(x => x.total > 0);
   const rs = razones.find(r => r.id === selRS);
   return (
@@ -4911,7 +4915,7 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
                         </div>
                       </details>
                     )}
-                    <button className="btn btn-g btn-sm" onClick={() => onDelete && onDelete(tar.id)}>🗑</button>
+                    <button className="btn btn-g btn-sm" title="Eliminar tarifa" onClick={() => { if (onDelete && confirm(`¿Eliminar la tarifa ${tar.clientName} · ${tar.origin} → ${tar.destination}?`)) onDelete(tar.id); }}>🗑</button>
                   </div>
                 </div>
               </div>
@@ -5250,7 +5254,7 @@ function AdminSocios({ trips, expenses, outsourced, socios, distributions, onSav
                   <div className="tsm txt2">{s.rol || "Socio"} · {(100 / socios.length).toFixed(1)}%</div>
                 </div>
                 <div className="flex gap4">
-                  <button className="btn btn-g btn-sm" onClick={() => onSaveSocios(socios.filter(x=>x.id!==s.id), [s.id])}>🗑</button>
+                  <button className="btn btn-g btn-sm" onClick={() => { if (confirm(`¿Quitar a ${s.nombre} de los socios? Cambia el reparto de utilidades.`)) onSaveSocios(socios.filter(x=>x.id!==s.id), [s.id]); }}>🗑</button>
                 </div>
               </div>
             ))}
@@ -5675,7 +5679,7 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
   );
 }
 
-function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const [tab, setTab] = useState("dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
@@ -5741,7 +5745,7 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
         {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
-        {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={id => onUpsertTarifa && saveTarifario && undefined} />}
+        {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={onDeleteTarifa} />}
         {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
@@ -6012,7 +6016,7 @@ export default function App() {
       onSaveClients={saveClients} onSaveProviders={saveProviders}
       onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
       onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
-      onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario}
+      onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario} onDeleteTarifa={delTarifa}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)}
       verPrueba={verPrueba} nPrueba={nPrueba} onToggleVerPrueba={() => setVerPrueba(p => !p)} /></>
   );
