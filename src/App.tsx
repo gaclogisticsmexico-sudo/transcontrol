@@ -466,6 +466,16 @@ function TripForm({ drivers, vehicles, razones, clients, currentDriver, isChofer
     if (!f.origin || !f.destination || !f.client || !f.vehicleId) { alert("Completa: Origen, Destino, Cliente y Unidad"); return; }
     if (f.tripStatus === "en_curso" && !f.leftAt.trim()) { alert("Dinos dónde dejaste la carga o la unidad, para que quien lo continúe sepa de dónde seguir."); return; }
     if (f.tripStatus === "en_patio" && !f.leftAt.trim()) { alert("Dinos en qué patio dejaste la mercancía."); return; }
+    // Anti-duplicados. La carta porte es única: si ya está en otro viaje, NO se guarda.
+    const dupFolio = tripsConFolio(trips, f.docNum);
+    if (dupFolio.length) {
+      alert(`La carta porte ${foliosDe(f.docNum).join(", ")} ya está registrada en otro viaje:\n${dupFolio.map(t => `${rotulo(t)} → ${t.destination || "?"}`).join("\n")}\n\nNo se guardó. Revisa el folio; si es el mismo servicio no lo registres dos veces.`);
+      return;
+    }
+    // Mismo día + cliente + origen + destino: puede ser legítimo (dos vueltas), se pregunta.
+    const llave = x => [x.date, normTxt(x.client), normTxt(x.origin), normTxt(x.destination)].join("|");
+    const iguales = (trips || []).filter(t => llave(t) === llave(f));
+    if (iguales.length && !confirm(`Ya hay ${iguales.length} viaje(s) igual(es) registrado(s):\n${iguales.map(t => `${rotulo(t)} → ${t.destination || "?"} (${t.driverName || "sin chofer"})`).join("\n")}\n\n¿Seguro que es OTRO viaje y quieres registrarlo?`)) return;
     const viaje = { ...f, id: tmpId, amount: 0, billingStatus: "sin_facturar", paymentMethod: "", driverName: (currentDriver?.name || drivers.find(d => d.id === f.driverId)?.name || ""), tripExpenses: tripExps, gpsMode: !!(gpsOrigin || gpsDestination), createdAt: new Date().toISOString() };
     if (f.tripStatus === "en_patio") {
       viaje.retiro = { patio: f.leftAt.trim(), partidas: f.partidas ? Number(f.partidas) : null, cerrado: false };
@@ -1550,7 +1560,17 @@ function ChoferApp({ checadas, gpsPos, onChecar, driver, trips, inspections, veh
         availableRelays={availableRelays} vehicles={vehicles} instant={instant} statusRequests={statusRequests} onCloseTrip={cerrarServicio}
         onNav={setView} onAck={onAck} onRelay={t => { setRelayTrip(t); setView("relay"); }}
         onUpdateInstant={onUpdateInstant} onUpdStatusRequest={onUpdStatusRequest}
-        onGPSTripEnd={gpsData => { setGpsTrip(gpsData); setView("nuevo"); }} />}
+        onGPSTripEnd={async gpsData => {
+          // Si ya lleva un servicio abierto hoy (iniciado por WhatsApp) no se abre un
+          // formulario en blanco (duplicaría el viaje): se ofrece cerrar ese servicio.
+          const abierto = trips.find(t => t.tripStatus === "en_ruta" && conductorActual(t) === driver.id &&
+            (t.date === today() || (t.legs || []).some(l => l.driverId === driver.id && l.date === today())));
+          if (abierto) {
+            if (!(await cerrarServicio(abierto))) showToast("No se registró nada. Si fue OTRO viaje, usa Registrar Viaje.");
+            return;
+          }
+          setGpsTrip(gpsData); setView("nuevo");
+        }} />}
       {view === "relay" && relayTrip && (
         <div className="page">
           <TripContinueForm trip={relayTrip} vehicles={av} currentDriver={driver}
