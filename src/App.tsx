@@ -84,7 +84,13 @@ const USUARIOS = {
   "edgar@transcontrol.com":        { rol: "chofer", nombre: "Edgar Sebastian Garcia Hernandez", id: "d2" },
   "tonatiuh@transcontrol.com":     { rol: "chofer", nombre: "Tonatiuh Sanchez Lopez",           id: "d3" },
   "crisoperador@transcontrol.com": { rol: "chofer", nombre: "Cristian Ramos Garcia",            id: "d4" },
+  // Operaciones (28-oct-2026): lleva todo el flujo de servicios de ambas razones
+  // sociales, sin utilidades, socios ni gastos generales (vista AdminApp rol="operaciones")
+  "alanfranco376@gmail.com":       { rol: "operaciones", nombre: "Franco" },
 };
+// Lo que el rol de operaciones NO lee (ni se descarga): reparto de socios,
+// gastos generales y cargas de diesel (con ellas se calcula el margen por viaje)
+const NO_OPERACIONES = new Set(["tr:expenses", "tr:socios", "tr:distributions", "tr:cargas_combustible"]);
 // ═══════════════════════════════════════════════════════════════
 
 // Firebase — solo Firestore y Auth (no se necesita Storage)
@@ -3381,7 +3387,7 @@ function AdminClientes({ trips, razones }) {
   );
 }
 
-function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onUpdate, onDelete }) {
+function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onUpdate, onDelete, verMargen = false }) {
   const [filt, setFilt] = useState({ rsId: "", provPaid: "", clientBs: "", month: nowMon() });
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -3427,7 +3433,7 @@ function AdminTercerizados({ outsourced, razones, clients, providers, onAdd, onU
           <span className="txt2">{filtered.length} tercerizados</span>
           <span>Ingreso cliente: <strong style={{ color: "var(--green)" }}>{fmt$(totalClientIncome)}</strong></span>
           <span>Costo proveedor: <strong style={{ color: "var(--red)" }}>{fmt$(totalProvCost)}</strong></span>
-          <span>Margen: <strong style={{ color: margin >= 0 ? "var(--green)" : "var(--red)" }}>{fmt$(margin)}</strong></span>
+          {verMargen && <span>Margen: <strong style={{ color: margin >= 0 ? "var(--green)" : "var(--red)" }}>{fmt$(margin)}</strong></span>}
         </div>
       </div>
       {filtered.length === 0 ? <Empty title="Sin tercerizados" sub="Registra viajes realizados con proveedores" /> : (
@@ -5684,8 +5690,267 @@ function AdminPanel({ trips, outsourced, expenses, checadas, gpsKm, vehicles }) 
   );
 }
 
-function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
-  const [tab, setTab] = useState("dashboard");
+// ═══════════════════════════════════════════════════════════════
+// MI DÍA (operaciones, 28-oct-2026): una sola pantalla con lo que hay que
+// resolver hoy, como la bandeja del WhatsApp: servicios a medias, cartas porte y
+// facturas sin ligar, unidades que se movieron sin servicio (para marcarle al
+// chofer) y la cobranza por cliente. Sin utilidades ni costos de la empresa.
+// Solo lo del arranque limpio en adelante (lo anterior se revisa en Viajes).
+// ═══════════════════════════════════════════════════════════════
+const INICIO_OPERACIONES = "2026-10-01";
+
+function faltaCaptura(t) {
+  const f = [];
+  if (!String(t.client || "").trim()) f.push("cliente");
+  if (!t.razonSocialId) f.push("razón social");
+  if (!(Number(t.amount) > 0)) f.push("monto");
+  if (!foliosDe(t.docNum).length && !t.invoiceNumber && (t.cpPendiente || (t.tripStatus || "completado") === "completado")) f.push("carta porte");
+  return f;
+}
+
+function puntajeCfdi(r, t, vehicles) {
+  const fr = String(r.fecha_servicio || r.fecha || "").slice(0, 10);
+  const dias = fr && t.date ? Math.abs((new Date(t.date + "T12:00:00") - new Date(fr + "T12:00:00")) / 864e5) : 9;
+  if (dias > 2) return { s: 0, por: [] };
+  let s = dias === 0 ? 3 : 1; const por = [dias === 0 ? "fecha" : "fecha ±" + dias];
+  const pn = x => String(x || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const placa = pn((vehicles.find(v => v.id === t.vehicleId) || {}).plates);
+  if (r.placa && placa && pn(r.placa) === placa) { s += 3; por.push("unidad"); }
+  const ch = normTxt(t.driverName); const op = normTxt(r.operador);
+  if (ch && op && (ch.includes(op) || op.includes(ch) || ch.split(" ")[0] === op.split(" ")[0])) { s += 2; por.push("chofer"); }
+  const cl = normTxt(t.client); const rec = normTxt(r.receptor);
+  if (cl && rec && (rec.includes(cl) || cl.includes(rec.split(" ")[0]))) { s += 2; por.push("cliente"); }
+  const dst = normTxt(r.destino);
+  if (dst && normTxt(t.destination) && (dst.includes(normTxt(t.destination)) || normTxt(t.destination).includes(dst))) { s += 2; por.push("destino"); }
+  return { s, por };
+}
+
+function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifario, cartasPorte, gpsSin, gpsResp, quien,
+  onUpdate, onUpsertTarifa, onUpdateCP, onUpdateOut, irA }) {
+  const [abierto, setAbierto] = useState(null);       // {id, que: "datos"|"monto"|"cobro"}
+  const [ligando, setLigando] = useState(null);       // id de la carta porte con el selector abierto
+  const [eleccion, setEleccion] = useState("");
+  const [vista, setVista] = useState("todo");
+  const recientes = trips.filter(t => String(t.date || "") >= INICIO_OPERACIONES);
+
+  // 1) Servicios que les falta captura (lo que suben los choferes)
+  const aMedias = recientes.filter(t => faltaCaptura(t).length && !["en_ruta", "en_curso"].includes(t.tripStatus))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const enRuta = recientes.filter(t => ["en_ruta", "en_curso"].includes(t.tripStatus));
+  // 2) Facturar y cobrar
+  const porFacturar = recientes.filter(t => Number(t.amount) > 0 && (t.billingStatus || "sin_facturar") === "sin_facturar" && !esSinFactura(t));
+  const complemento = trips.filter(t => t.billingStatus === "facturado" && t.metodoPago === "PPD");
+  const porCobrarPUE = trips.filter(t => t.billingStatus === "facturado" && t.metodoPago !== "PPD");
+  const efectivo = recientes.filter(t => esSinFactura(t) && t.billingStatus !== "pagado" && Number(t.amount) > 0);
+  // 3) Cartas porte / facturas que llegaron de Facturama sin servicio
+  const sueltas = (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id
+    && String(r.fecha_servicio || r.fecha || "") >= INICIO_OPERACIONES)
+    .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  // 4) Unidades que se movieron sin servicio (el bot ya le preguntó al chofer)
+  const contestadas = new Set((gpsResp || []).map(r => r.clave));
+  const sinServicio = Object.entries(gpsSin?.dias || {}).flatMap(([, items]) => items || [])
+    .filter(r => !contestadas.has(r.clave)).sort((a, b) => String(b.fecha + b.inicio).localeCompare(String(a.fecha + a.inicio)));
+  // 5) Cobranza por cliente (lo facturado o en efectivo que no se ha cobrado)
+  const porCliente = {};
+  trips.filter(t => ["facturado", "sin_factura"].includes(t.billingStatus) && Number(t.amount) > 0).forEach(t => {
+    const k = t.client || "(sin cliente)";
+    const x = porCliente[k] || (porCliente[k] = { cliente: k, total: 0, vencido: 0, n: 0 });
+    x.total += totalTrip(t); x.n += 1;
+    if ((daysSince(t.date) || 0) > 30) x.vencido += totalTrip(t);
+  });
+  const cobranza = Object.values(porCliente).sort((a, b) => b.total - a.total);
+
+  const ligar = async (r, t) => {
+    const ok1 = await onUpdateCP(r.id, { tc_trip_id: t.id, ligadoPor: `${quien || "Operaciones"} (app) ${today()}` });
+    if (ok1 === false) return;
+    if (r.tipo === "I") {
+      const patch = {};
+      const bs = t.billingStatus || "sin_facturar";
+      if (["sin_facturar", "sin_factura"].includes(bs)) {
+        patch.billingStatus = "facturado"; patch.invoiceNumber = String(r.folio);
+        if (r.uuid) patch.invoiceUuid = r.uuid;
+        if (["PPD", "PUE"].includes(r.metodo_pago)) patch.metodoPago = r.metodo_pago;
+      } else if (!t.invoiceNumber) patch.invoiceNumber = String(r.folio);
+      const sub = Number(r.subtotal) || 0;
+      if (sub > 0 && !(Number(t.amount) > 0)) {
+        patch.amount = sub; patch.amountBase = sub; patch.sinFactura = false;
+        const tot = Number(r.total) || 0;
+        if (tot) patch.ivaRetention = Math.abs(tot - sub * 1.12) < Math.abs(tot - sub * 1.16);
+      }
+      if (Object.keys(patch).length) await onUpdate(t.id, patch);
+      if (sub > 0 && Number(t.amount) > 0 && Math.abs(sub - Number(t.amount)) > 1)
+        alert(`Ojo: la factura es por ${fmt$(sub)} de subtotal y el servicio tiene ${fmt$(t.amount)}. Revisa cuál queda.`);
+    } else if (r.folio) {
+      const previo = String(t.docNum || "").trim(); const f = String(r.folio);
+      const doc = !previo || previo === "0" ? f : foliosDe(previo).includes(folioCP(f)) ? previo : `${previo}, ${f}`;
+      await onUpdate(t.id, { docNum: doc, cpPendiente: false });
+    }
+    setLigando(null); setEleccion("");
+  };
+  const ligarTercerizado = async (r, o) => {
+    const ok1 = await onUpdateCP(r.id, { tc_out_id: o.id, ligadoPor: `${quien || "Operaciones"} (app) ${today()}` });
+    if (ok1 === false) return;
+    if (r.tipo !== "I" && r.folio) await onUpdateOut(o.id, { cartaPorteFolio: String(r.folio) });
+    setLigando(null); setEleccion("");
+  };
+  const lugar = (r, lado) => r[lado] || (r[lado + "_cp"] ? `CP ${r[lado + "_cp"]}` : "?");
+  const telChofer = r => String(r.tel || (drivers.find(d => d.id === r.driverId) || {}).phone || "").replace(/\D/g, "").slice(-10);
+  const resumen = t => `${fmtDate(t.date)} · ${t.client || "(sin cliente)"} · ${t.origin || "?"} → ${t.destination || "?"}${t.driverName ? ` · ${String(t.driverName).split(" ")[0]}` : ""}`;
+
+  const tarjeta = ({ titulo, n, color, children, clave }) => (vista === "todo" || vista === clave) && (
+    <div className="card mb12" style={{ borderLeft: `4px solid ${color}` }}>
+      <div className="flex aic jb mb8"><div style={{ fontWeight: 800 }}>{titulo}</div><span className="badge" style={{ background: color, color: "#fff" }}>{n}</span></div>
+      {n === 0 ? <div className="tsm txt2">Nada pendiente ✅</div> : children}
+    </div>
+  );
+  const kpi = ({ l, n, clave, color }) => (
+    <button className="card" onClick={() => setVista(vista === clave ? "todo" : clave)}
+      style={{ flex: 1, minWidth: 130, textAlign: "left", cursor: "pointer", borderTop: `3px solid ${color}`, outline: vista === clave ? `2px solid ${color}` : "none" }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color }}>{n}</div><div className="tsm txt2">{l}</div>
+    </button>
+  );
+
+  return (
+    <div className="ap">
+      <div className="flex aic jb mb12 wrap gap8">
+        <div className="stitle" style={{ margin: 0 }}>🗓️ Mi día{quien ? ` · ${quien}` : ""}</div>
+        <span className="tsm txt2">Toca un cuadro para ver solo eso. Para timbrar facturas, complementos o cartas porte usa el bot de WhatsApp.</span>
+      </div>
+      <div className="flex gap8 wrap mb16">
+        {kpi({ l: "Servicios por completar", n: aMedias.length, clave: "captura", color: "var(--amber)" })}
+        {kpi({ l: "Cartas porte / facturas sin ligar", n: sueltas.length, clave: "cfdi", color: "var(--blue, #2563eb)" })}
+        {kpi({ l: "Unidades movidas sin servicio", n: sinServicio.length, clave: "gps", color: "var(--red)" })}
+        {kpi({ l: "Por facturar", n: porFacturar.length, clave: "facturar", color: "var(--amber)" })}
+        {kpi({ l: "Por cobrar (complemento / comprobante)", n: complemento.length + porCobrarPUE.length + efectivo.length, clave: "cobrar", color: "var(--green)" })}
+      </div>
+
+      {tarjeta({ titulo: "🚚 Servicios que subieron los choferes y les falta algo", n: aMedias.length, color: "var(--amber)", clave: "captura", children: (<>
+        {enRuta.length > 0 && <div className="tsm txt2 mb8">En ruta ahorita: {enRuta.map(t => `${String(t.driverName || "").split(" ")[0]} (${t.client || "?"})`).join(", ")}</div>}
+        <div className="fcol gap8">
+          {aMedias.slice(0, 40).map(t => (
+            <div key={t.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+              <div className="flex aic jb wrap gap8">
+                <div><div style={{ fontWeight: 700 }}>{resumen(t)}</div>
+                  <div className="flex gap4 wrap mt4">{faltaCaptura(t).map(x => <span key={x} className="badge ba">falta {x}</span>)}</div></div>
+                <div className="flex gap4 wrap">
+                  <button className="btn btn-g btn-sm" onClick={() => setAbierto(abierto?.id === t.id && abierto.que === "datos" ? null : { id: t.id, que: "datos" })}>✏️ Datos y carta porte</button>
+                  <button className="btn btn-g btn-sm" onClick={() => setAbierto(abierto?.id === t.id && abierto.que === "monto" ? null : { id: t.id, que: "monto" })}>💲 Monto</button>
+                </div>
+              </div>
+              {abierto?.id === t.id && abierto.que === "datos" && <TripBaseEditor t={t} trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} clients={clients} onUpdate={onUpdate} onDone={() => setAbierto(null)} />}
+              {abierto?.id === t.id && abierto.que === "monto" && <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setAbierto(null)} />}
+            </div>
+          ))}
+        </div>
+      </>) })}
+
+      {tarjeta({ titulo: "📄 Cartas porte y facturas de Facturama sin ligar a un servicio", n: sueltas.length, color: "var(--blue, #2563eb)", clave: "cfdi", children: (<>
+        <div className="fcol gap8">
+          {sueltas.slice(0, 30).map(r => {
+            const cands = recientes.map(t => ({ t, ...puntajeCfdi(r, t, vehicles) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s).slice(0, 4);
+            return (
+              <div key={r.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+                <div style={{ fontWeight: 700 }}>{r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} {r.folio} · {r.receptor || "?"}{Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)} sin IVA` : ""}</div>
+                <div className="tsm txt2">
+                  {r.fecha_servicio ? `Servicio ${fmtDate(r.fecha_servicio)}${r.hora_salida ? " " + r.hora_salida : ""} · ` : `Emitida ${fmtDate(r.fecha)} · `}
+                  {(r.origen || r.origen_cp) ? `${lugar(r, "origen")} → ${lugar(r, "destino")} · ` : ""}
+                  {r.vehiculo || r.placa ? `🚚 ${r.vehiculo || r.placa} · ` : ""}{r.operador ? `👤 ${r.operador}` : ""}
+                </div>
+                <div className="flex gap4 wrap mt4">
+                  {cands.map(({ t, por }) => (
+                    <button key={t.id} className="btn btn-gr btn-sm" style={{ whiteSpace: "normal", textAlign: "left", maxWidth: "100%" }} title={"Cuadra por: " + por.join(", ")} onClick={() => ligar(r, t)}>
+                      🔗 {resumen(t)} <span className="tsm">({por.join(", ")})</span>
+                    </button>
+                  ))}
+                  <button className="btn btn-g btn-sm" onClick={() => { setLigando(ligando === r.id ? null : r.id); setEleccion(""); }}>Otro servicio…</button>
+                </div>
+                {ligando === r.id && (
+                  <div className="flex gap4 wrap mt8 aic">
+                    <select value={eleccion} onChange={e => setEleccion(e.target.value)} style={{ maxWidth: "100%", width: 520 }}>
+                      <option value="">Elige el servicio o tercerizado…</option>
+                      <optgroup label="Servicios propios">
+                        {[...recientes].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 80).map(t => <option key={t.id} value={"t:" + t.id}>{resumen(t)}</option>)}
+                      </optgroup>
+                      <optgroup label="Tercerizados">
+                        {(outsourced || []).filter(o => String(o.date || "") >= INICIO_OPERACIONES).slice(-40).reverse().map(o => <option key={o.id} value={"o:" + o.id}>{fmtDate(o.date)} · {o.client} · {o.origin} → {o.destination} · {o.provider}</option>)}
+                      </optgroup>
+                    </select>
+                    <button className="btn btn-a btn-sm" disabled={!eleccion} onClick={() => {
+                      const [k, id] = eleccion.split(":");
+                      if (k === "t") { const t = trips.find(x => x.id === id); if (t) ligar(r, t); }
+                      else { const o = outsourced.find(x => x.id === id); if (o) ligarTercerizado(r, o); }
+                    }}>Ligar</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </>) })}
+
+      {tarjeta({ titulo: "📍 Unidades que se movieron sin servicio capturado", n: sinServicio.length, color: "var(--red)", clave: "gps", children: (<>
+        <div className="tsm txt2 mb8">El bot ya le preguntó al chofer por WhatsApp; si no ha contestado, márcale.</div>
+        <div className="fcol gap8">
+          {sinServicio.slice(0, 30).map(r => {
+            const tel = telChofer(r);
+            const msg = `Hola ${String(r.chofer || "").split(" ")[0]}, el GPS marcó un recorrido de la ${r.unidad} el ${fmtDate(r.fecha)} de ${r.inicio} a ${r.fin || "?"} (${r.km} km) sin servicio capturado. ¿Qué fue?`;
+            return (
+              <div key={r.clave} className="flex aic jb wrap gap8" style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{String(r.chofer || "?").split(" ").slice(0, 2).join(" ")} · {r.unidad}</div>
+                  <div className="tsm txt2">{fmtDate(r.fecha)} · {r.inicio} a {r.fin || "?"} · {r.km} km{r.lugares ? ` · 📍 ${r.lugares}` : ""}</div>
+                </div>
+                {tel.length === 10 && (
+                  <div className="flex gap4">
+                    <a className="btn btn-g btn-sm" href={`tel:+52${tel}`}>📞 Llamar</a>
+                    <a className="btn btn-gr btn-sm" href={`https://wa.me/52${tel}?text=${encodeURIComponent(msg)}`} target="_blank" rel="noopener noreferrer">💬 WhatsApp</a>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </>) })}
+
+      {tarjeta({ titulo: "🧾 Por facturar (ya tienen monto)", n: porFacturar.length, color: "var(--amber)", clave: "facturar", children: (<>
+        <div className="fcol gap8">
+          {porFacturar.sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(0, 40).map(t => (
+            <div key={t.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+              <div className="flex aic jb wrap gap8">
+                <div><div style={{ fontWeight: 700 }}>{resumen(t)}</div><div className="tsm txt2">{fmt$(t.amount)} sin IVA · {(razones.find(r => r.id === t.razonSocialId) || {}).short || "sin razón social"}</div></div>
+                <button className="btn btn-g btn-sm" onClick={() => setAbierto(abierto?.id === t.id && abierto.que === "cobro" ? null : { id: t.id, que: "cobro" })}>🧾 Factura y cobro</button>
+              </div>
+              {abierto?.id === t.id && abierto.que === "cobro" && <BillingPanel trip={t} onUpdate={onUpdate} />}
+            </div>
+          ))}
+        </div>
+      </>) })}
+
+      {tarjeta({ titulo: "💳 Por cobrar", n: complemento.length + porCobrarPUE.length + efectivo.length, color: "var(--green)", clave: "cobrar", children: (<>
+        <div className="tsm mb8">
+          {complemento.length} facturas PPD esperan su <b>complemento</b> · {porCobrarPUE.length} PUE esperan el <b>comprobante de pago</b> · {efectivo.length} en <b>efectivo</b> por cobrar.
+        </div>
+        <div className="flex gap8 wrap mb8">
+          <button className="btn btn-g btn-sm" onClick={() => irA("complementos")}>📋 Ir a Complementos</button>
+          <button className="btn btn-g btn-sm" onClick={() => irA("clientes")}>🤝 Ver cobranza por cliente</button>
+        </div>
+        <table style={{ width: "100%", fontSize: 13 }}>
+          <thead><tr className="txt2"><th style={{ textAlign: "left" }}>Cliente</th><th>Servicios</th><th style={{ textAlign: "right" }}>Por cobrar</th><th style={{ textAlign: "right" }}>Vencido +30 días</th></tr></thead>
+          <tbody>
+            {cobranza.slice(0, 12).map(x => (
+              <tr key={x.cliente}><td>{x.cliente}</td><td style={{ textAlign: "center" }}>{x.n}</td><td style={{ textAlign: "right" }}>{fmt$(x.total)}</td>
+                <td style={{ textAlign: "right", color: x.vencido > 0 ? "var(--red)" : "inherit" }}>{x.vencido > 0 ? fmt$(x.vencido) : "—"}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </>) })}
+    </div>
+  );
+}
+
+function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+  const esOp = rol === "operaciones";
+  const [tab, setTab] = useState(esOp ? "midia" : "dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
   const mk = nowMon();
   // Pendientes del Cierre del mes: sin monto, por facturar, efectivo o facturado
@@ -5697,7 +5962,8 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
     if (["sin_facturar", "sin_factura", "facturado"].includes(b)) return true;
     return b === "pagado" && t.metodoPago === "PPD" && !t.complementoSubido;
   }).length + outsourced.filter(o => (o.date || "").startsWith(mk) && !o.paid).length;
-  const tabs = [
+  const todas = [
+    { id: "midia", l: "🗓️ Mi día" },
     { id: "panel", l: "📈 Panel" },
     { id: "dashboard", l: "📊 Dashboard" },
     { id: "flota", l: "🚚 Flota" },
@@ -5716,6 +5982,11 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
     { id: "inspecciones", l: `🔧 Inspecciones${activeIssues > 0 ? ` (${activeIssues})` : ""}` },
     { id: "disponib", l: "📅 Disponibilidad" }, { id: "config", l: "⚙ Config" },
   ];
+  // Operaciones: lo del dia a dia, sin Panel/Dashboard (utilidad), Socios,
+  // Forecast, Análisis de gastos, Financiero ni Config (razones, catálogos)
+  const PESTANAS_OP = ["midia", "viajes", "pendientes", "complementos", "clientes", "tercerizados", "cuentas-prov",
+    "tarifario", "checador", "flota", "conductores", "unidades", "inspecciones", "disponib"];
+  const tabs = esOp ? todas.filter(t => PESTANAS_OP.includes(t.id)) : todas;
 
   // Export all data as JSON backup
   const exportBackup = () => {
@@ -5732,39 +6003,42 @@ function AdminApp({ checadas, gpsKm, cargasComb, mantenimientos, trips, inspecti
       <div className="hdr">
         <div className="logo">⬡ TRANSCONTROL</div>
         <div className="flex aic gap8">
-          <span className="badge ba">Admin</span>
+          <span className="badge ba">{esOp ? "Operaciones" : "Admin"}</span>
           {onToggleVerPrueba && (nPrueba > 0 || verPrueba) && (
             <button className={`btn btn-sm ${verPrueba ? "btn-a" : "btn-g"}`} title="Datos marcados como prueba (choferes de prueba por WhatsApp)" onClick={onToggleVerPrueba}>
               🧪 {verPrueba ? "Ocultar prueba" : `Ver datos de prueba (${nPrueba})`}
             </button>
           )}
-          <button className="btn btn-g btn-sm" title="Exportar copia de seguridad" onClick={exportBackup}>💾</button>
+          {!esOp && <button className="btn btn-g btn-sm" title="Exportar copia de seguridad" onClick={exportBackup}>💾</button>}
           <button className="btn btn-g btn-sm" onClick={onLogout}><Ico path={IC.logout} size={14} /> Salir</button>
         </div>
       </div>
       <div className="nav-tabs">{tabs.map(t => <button key={t.id} className={`ntab ${tab === t.id ? "act" : ""}`} onClick={() => setTab(t.id)}>{t.l}</button>)}</div>
       <div style={{ paddingTop: 8 }}>
-        {tab === "panel" && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} checadas={checadas} gpsKm={gpsKm} vehicles={vehicles} />}
+        {tab === "midia" && <MiDia trips={trips} outsourced={outsourced} drivers={drivers} vehicles={vehicles} razones={razones}
+          clients={clients} tarifario={tarifario} cartasPorte={cartasPorte} gpsSin={gpsSin} gpsResp={gpsResp} quien={quien}
+          onUpdate={onUpdate} onUpsertTarifa={onUpsertTarifa} onUpdateCP={onUpdateCP} onUpdateOut={onUpdateOut} irA={setTab} />}
+        {tab === "panel" && !esOp && <AdminPanel trips={trips} outsourced={outsourced} expenses={expenses} checadas={checadas} gpsKm={gpsKm} vehicles={vehicles} />}
         {tab === "checador" && <AdminChecador checadas={checadas} drivers={drivers} />}
         {tab === "flota" && <AdminFlota gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
-        {tab === "dashboard" && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
-        {tab === "socios" && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
+        {tab === "dashboard" && !esOp && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
+        {tab === "socios" && !esOp && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
         {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={onDeleteTarifa} />}
-        {tab === "forecast" && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
-        {tab === "gastos" && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
+        {tab === "forecast" && !esOp && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
+        {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
-        {tab === "tercerizados" && <AdminTercerizados outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
+        {tab === "tercerizados" && <AdminTercerizados verMargen={!esOp} outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
         {tab === "cuentas-prov" && <AdminCuentasProveedor outsourced={outsourced} providers={providers} razones={razones} trips={trips} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
-        {tab === "financiero" && <AdminFinanciero trips={trips} expenses={expenses} outsourced={outsourced} razones={razones} onSaveExpenses={onSaveExpenses} />}
+        {tab === "financiero" && !esOp && <AdminFinanciero trips={trips} expenses={expenses} outsourced={outsourced} razones={razones} onSaveExpenses={onSaveExpenses} />}
         {tab === "conductores" && <AdminConductores trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} />}
         {tab === "unidades" && <AdminUnidades trips={trips} inspections={inspections} vehicles={vehicles} />}
         {tab === "odometro" && <AdminOdometro trips={trips} vehicles={vehicles} onSaveVehicles={onSaveVehicles} />}
         {tab === "inspecciones" && <div className="ap"><div className="stitle">Inspecciones Físico-Mecánicas</div><InspectionsView inspections={inspections} vehicles={vehicles} drivers={drivers} onResolve={onResolveInspection} onDelete={onDeleteInspection} /></div>}
         {tab === "disponib" && <CoordAvailability vehicles={vehicles} drivers={drivers} schedule={schedule} instant={instant} onUpdateInstant={onUpdateInstant} onAddStatusRequest={onAddStatusRequest} />}
-        {tab === "config" && <AdminConfig trips={trips} vehicles={vehicles} drivers={drivers} clients={clients} providers={providers} razones={razones} onSaveVehicles={onSaveVehicles} onSaveDrivers={onSaveDrivers} onSaveClients={onSaveClients} onSaveProviders={onSaveProviders} onSaveRazones={onSaveRazones} />}
+        {tab === "config" && !esOp && <AdminConfig trips={trips} vehicles={vehicles} drivers={drivers} clients={clients} providers={providers} razones={razones} onSaveVehicles={onSaveVehicles} onSaveDrivers={onSaveDrivers} onSaveClients={onSaveClients} onSaveProviders={onSaveProviders} onSaveRazones={onSaveRazones} />}
       </div>
     </div>
   );
@@ -5793,6 +6067,9 @@ export default function App() {
   const [checadasAll, setChecadas] = useState([]);    // checador de choferes
   const [gpsPos, setGpsPos] = useState({ v: [] });    // posicion actual de las unidades (bot)
   const [mantenimientos, setMantenimientos] = useState([]);
+  const [cartasPorte, setCartasPorte] = useState([]);   // CFDI registrados por el bot (Mi día)
+  const [gpsSin, setGpsSin] = useState({});           // recorridos GPS sin servicio (bot)
+  const [gpsResp, setGpsResp] = useState([]);         // lo que ya contestaron los choferes
   // Datos de prueba (prueba:true, los genera el bot con choferes de prueba por
   // WhatsApp): fuera de TODAS las vistas y KPIs. El estado guarda todo (las
   // escrituras son por id, así que filtrar aquí no borra nada) y solo el admin
@@ -5822,7 +6099,7 @@ export default function App() {
       // no las sobrescribe con una lectura que pudo ser más vieja.
       const got = new Set();
       try {
-        const listen = (k, setter, def) => onSnapshot(doc(db, "tc", sk(k)),
+        const listen = (k, setter, def) => (info.rol === "operaciones" && NO_OPERACIONES.has(k)) ? null : onSnapshot(doc(db, "tc", sk(k)),
           s => { got.add(k); setter(s.exists() ? s.data().v : def); },
           err => console.error("onSnapshot", k, err.message));
         dataUnsubs = [
@@ -5847,17 +6124,23 @@ export default function App() {
           listen("tr:checadas", v => setChecadas(v || []), []),
           listen("tr:gps_pos", v => setGpsPos(v || { v: [] }), { v: [] }),
           listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
+          ...(info.rol === "chofer" ? [] : [
+            listen("tr:cartas_porte", v => setCartasPorte(v || []), []),
+            listen("tr:gps_sin_servicio", v => setGpsSin(v || {}), {}),
+            listen("tr:gps_respuestas", v => setGpsResp(v || []), []),
+          ]),
         ];
       } catch (e) { console.error("listeners", e.message); }
       const safety = setTimeout(() => setLoading(false), 8000);
+      const ldR = (k, def) => (info.rol === "operaciones" && NO_OPERACIONES.has(k)) ? Promise.resolve(def) : ld(k, def);
       Promise.all([
         ld("tr:trips",[]), ld("tr:inspections",[]),
         ld("tr:vehicles",DEF_VEHICLES), ld("tr:drivers",DEF_DRIVERS),
-        ld("tr:expenses",[]), ld("tr:outsourced",[]),
+        ldR("tr:expenses",[]), ld("tr:outsourced",[]),
         ld("tr:razones",DEF_RS), ld("tr:clients",[]), ld("tr:providers",[]),
         ld("tr:instructions",[]), ld("tr:schedule",[]),
         ld("tr:instant",{vehicles:[],drivers:[]}), ld("tr:status_requests",[]),
-        ld("tr:socios",[]), ld("tr:distributions",[]), ld("tr:tarifario",[]),
+        ldR("tr:socios",[]), ldR("tr:distributions",[]), ld("tr:tarifario",[]),
       ]).then(async ([t,i,v,d,e,o,r,cl,prov,ins,sc,inst,sreq,soc,dist,tar]) => {
         const put = (k, setter, v) => { if (!got.has(k)) setter(v); };
         put("tr:trips", setTrips, t); put("tr:inspections", setInspections, i);
@@ -5917,6 +6200,7 @@ export default function App() {
   const SOC = arrOps("tr:socios", v => setSocios(v || []), socios);
   const DIST = arrOps("tr:distributions", v => setDistributions(v || []), distributions);
   const TAR = arrOps("tr:tarifario", v => setTarifario(v || []), tarifario);
+  const CPO = arrOps("tr:cartas_porte", v => setCartasPorte(v || []), cartasPorte);
   const addTrip = T.add;
   const addChecada = CH.add;
   const updTrip = T.upd;
@@ -6009,10 +6293,12 @@ export default function App() {
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)} /></>
   );
 
-  if (vista !== "admin") return <LoginScreen />;
+  if (vista !== "admin" && vista !== "operaciones") return <LoginScreen />;
+  const esOp = vista === "operaciones";
   return (
-    <>{barra}<AdminApp checadas={checadas} gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
-      expenses={expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
+    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} gpsSin={gpsSin} gpsResp={gpsResp}
+      onUpdateCP={CPO.upd} checadas={checadas} gpsKm={gpsKm} cargasComb={esOp ? [] : cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
+      expenses={esOp ? [] : expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
       socios={socios} distributions={distributions} tarifario={tarifario}
       onAdd={addTrip} onUpdate={updTrip} onDelete={delTrip} onAddIns={addIns}
