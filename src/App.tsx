@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
-import { initializeFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from "firebase/firestore";
+import { initializeFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot, runTransaction } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
@@ -196,6 +196,10 @@ function mergeById(base, next, fresh, removeIds = []) {
 async function ldPh(id, t) {
   try { const s = await getDoc(doc(db, "ph", `${sk(id)}_${t}`)); return s.exists() ? s.data().v : null; } catch { return null; }
 }
+// Borra un archivo subido por error (29-oct-2026). true si se borró.
+async function dlPh(id, t) {
+  try { await deleteDoc(doc(db, "ph", `${sk(id)}_${t}`)); return true; } catch (e) { avisoError("borrar archivo " + t, e); return false; }
+}
 // Devuelve true solo si el archivo quedó guardado.
 async function svPh(id, t, b64) {
   try {
@@ -335,7 +339,7 @@ function ChkBox({ checked, onChange }) {
   return <div className={`chk-box ${checked ? "on" : ""}`} style={{ cursor: "pointer" }} onClick={onChange}>{checked && <Ico path={IC.check} size={13} />}</div>;
 }
 
-function PhotoBtn({ label, photoKey, compact = false, onLoad }) {
+function PhotoBtn({ label, photoKey, compact = false, onLoad, onDelete }) {
   const [ph, setPh] = useState(null);
   const [show, setShow] = useState(false);
   const ref = useRef();
@@ -372,6 +376,11 @@ function PhotoBtn({ label, photoKey, compact = false, onLoad }) {
         style={drag ? { outline: "2px dashed var(--blue)", outlineOffset: 2, borderRadius: 6 } : undefined}>
         <button className={`btn btn-g ${compact ? "btn-sm" : ""}`} onClick={() => ref.current.click()} title="Clic para elegir, o arrastra el archivo aquí"><Ico path={IC.img} size={14} /> {ph ? "Cambiar" : `📎 ${label}`}</button>
         {ph && <button className={`btn btn-b ${compact ? "btn-sm" : ""}`} onClick={() => setShow(true)}><Ico path={IC.eye} size={14} /> Ver</button>}
+        {ph && <button className={`btn btn-g ${compact ? "btn-sm" : ""}`} title="Borrar este archivo (para subir el correcto)" style={{ color: "var(--red)" }}
+          onClick={async () => {
+            if (!confirm(`¿Borrar este archivo (${label})? Después puedes subir el correcto.`)) return;
+            if (await dlPh(photoKey[0], photoKey[1])) { setPh(null); if (onDelete) onDelete(); }
+          }}>🗑</button>}
       </div>
     </div>
   );
@@ -2671,6 +2680,19 @@ function BillingPanel({ trip, onUpdate }) {
   // Revertir un pago: si era efectivo regresa a "pendiente de pago (efectivo)",
   // si no, a "facturado" (con su PPD/PUE si lo tenía).
   const eraEfectivo = !!trip.sinFactura || (!mp && trip.paymentMethod === "efectivo");
+  // Comprobante de pago (29-oct-2026): se puede subir en cualquier estado; al
+  // subirlo el servicio queda PAGADO (un PPD sigue pidiendo su complemento).
+  const alSubirComprobante = () => {
+    if (bs === "pagado") return;
+    const aviso = bs === "sin_facturar" ? "\n(Ojo: todavía no está facturado.)" : mp === "PPD" ? "\n(Es PPD: después sube el complemento de pago.)" : "";
+    if (confirm(`Comprobante guardado. ¿Marco el servicio como PAGADO hoy?${aviso}`))
+      save({ billingStatus: "pagado", paidDate: today(), ...(bs === "sin_factura" ? { paymentMethod: trip.paymentMethod || "efectivo" } : {}) });
+  };
+  const alBorrarComprobante = () => {
+    if (bs === "pagado" && confirm("¿También regreso el servicio a POR COBRAR?"))
+      save(eraEfectivo ? { billingStatus: "sin_factura", sinFactura: true, paidDate: null } : { billingStatus: "facturado", paidDate: null });
+  };
+  const ppdSinComplemento = bs === "pagado" && mp === "PPD" && !trip.complementoSubido;
   return (
     <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 6, padding: 14, marginTop: 8 }}>
       <div className="stitle" style={{ fontSize: 15, marginBottom: 10 }}>💰 Cobranza y facturación SAT</div>
@@ -2779,9 +2801,13 @@ function BillingPanel({ trip, onUpdate }) {
           <div className="card" style={{ background: "#f59e0b0a", border: "1px solid var(--amber)" }}>
             <div style={{ fontWeight: 700, marginBottom: 4 }}>📋 Pendiente: Complemento de pago</div>
             <div className="tsm txt2 mb8">Sube el complemento SAT cuando el cliente realice el pago.</div>
-            <div className="tsm txt2 mb4">Complemento de pago SAT</div>
-            <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact
-              onLoad={() => save({ billingStatus: "pagado", paidDate: today(), complementoSubido: true })} />
+            <div className="flex gap8 wrap">
+              <div><div className="tsm txt2 mb4">Comprobante de pago del cliente</div>
+                <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact onLoad={alSubirComprobante} onDelete={alBorrarComprobante} /></div>
+              <div><div className="tsm txt2 mb4">Complemento de pago SAT</div>
+                <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact
+                  onLoad={() => save({ billingStatus: "pagado", paidDate: trip.paidDate || today(), complementoSubido: true })} /></div>
+            </div>
           </div>
           <div className="flex gap4 wrap">
             <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), complementoSubido: true })}>
@@ -2799,7 +2825,7 @@ function BillingPanel({ trip, onUpdate }) {
             <div style={{ fontWeight: 700, marginBottom: 4 }}>💳 Pendiente: Comprobante de pago</div>
             <div className="tsm txt2 mb4">Comprobante de pago del cliente</div>
             <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact
-              onLoad={() => save({ billingStatus: "pagado", paidDate: today() })} />
+              onLoad={() => save({ billingStatus: "pagado", paidDate: today() })} onDelete={alBorrarComprobante} />
           </div>
           <div className="flex gap4 wrap">
             <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today() })}>✓ Marcar pagado</button>
@@ -2813,9 +2839,15 @@ function BillingPanel({ trip, onUpdate }) {
         <div className="fcol gap8">
           <div className="card" style={{ background: "#22c55e0a", border: "1px solid var(--green)" }}>
             <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 4 }}>
-              ✓ {mp === "PPD" ? "Pagado con complemento emitido" : "Pagado"}
+              ✓ {mp === "PPD" ? (ppdSinComplemento ? "Pagado — falta el complemento de pago" : "Pagado con complemento emitido") : "Pagado"}
             </div>
             {trip.paidDate && <div className="tsm txt2">Fecha: {fmtDate(trip.paidDate)}</div>}
+            {ppdSinComplemento && (
+              <div className="mt8"><div className="tsm txt2 mb4">Complemento de pago SAT</div>
+                <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact onLoad={() => save({ complementoSubido: true })} />
+                <button className="btn btn-gr btn-sm mt6" onClick={() => save({ complementoSubido: true })}>✓ Ya se emitió el complemento</button>
+              </div>
+            )}
           </div>
           <button className="btn btn-g btn-sm" style={{ color: "var(--amber)", borderColor: "var(--amber)" }}
             onClick={() => save(eraEfectivo ? { billingStatus: "sin_factura", sinFactura: true, paidDate: null } : { billingStatus: "facturado", paidDate: null })}>
@@ -2842,7 +2874,7 @@ function BillingPanel({ trip, onUpdate }) {
         <div><div className="tsm txt2 mb4">Comprobante entrega</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "delivery"]} compact /></div>
         <div><div className="tsm txt2 mb4">Factura CFDI</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "invoice"]} compact /></div>
         {mp === "PPD" && <div><div className="tsm txt2 mb4">Complemento SAT</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "complemento"]} compact /></div>}
-        {mp === "PUE" && <div><div className="tsm txt2 mb4">Comprobante pago</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "payment"]} compact /></div>}
+        <div><div className="tsm txt2 mb4">Comprobante pago</div><PhotoBtn label="Ver/subir" photoKey={[trip.id, "payment"]} compact onLoad={alSubirComprobante} onDelete={alBorrarComprobante} /></div>
       </div>
 
       {(trip.tripExpenses || []).length > 0 && (
@@ -4835,9 +4867,12 @@ function AdminCuentasProveedor({ outsourced, providers, razones, trips, onUpdate
 }
 
 function AdminComplementos({ trips, onUpdate }) {
-  const pending = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "facturado")
+  // Tambien los PPD ya pagados (subieron el comprobante) a los que les falta el
+  // complemento; solo del arranque limpio en adelante (lo viejo no traia la marca)
+  const pending = trips.filter(t => t.metodoPago === "PPD" && (t.billingStatus === "facturado"
+      || (t.billingStatus === "pagado" && !t.complementoSubido && String(t.date || "") >= INICIO_OPERACIONES)))
     .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-  const done = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "pagado")
+  const done = trips.filter(t => t.metodoPago === "PPD" && t.billingStatus === "pagado" && !pending.includes(t))
     .sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).slice(0, 30);
   const [showDone, setShowDone] = useState(false);
   const totalPending = pending.reduce((s, t) => s + totalTrip(t), 0);
@@ -4865,7 +4900,7 @@ function AdminComplementos({ trips, onUpdate }) {
                   {t.invoiceNumber && <div className="tsm txt2">🧾 {t.invoiceNumber}</div>}
                 </div>
                 <div className="fcol" style={{ alignItems: "flex-end", gap: 4 }}>
-                  <span className="badge ba">PPD — Pdte. complemento</span>
+                  <span className="badge ba">{t.billingStatus === "pagado" ? "PPD — Pagado, falta complemento" : "PPD — Pdte. complemento"}</span>
                   {t.amount > 0 && <span style={{ fontWeight: 700, color: "var(--amber)" }}>{fmt$(totalTrip(t))}</span>}
                 </div>
               </div>
@@ -4873,9 +4908,9 @@ function AdminComplementos({ trips, onUpdate }) {
                 <div>
                   <div className="tsm txt2 mb4">Subir complemento de pago</div>
                   <PhotoBtn label="📎 Complemento SAT" photoKey={[t.id, "complemento"]} compact
-                    onLoad={() => save(t.id, { billingStatus: "pagado", paidDate: today(), complementoSubido: true })} />
+                    onLoad={() => save(t.id, { billingStatus: "pagado", paidDate: t.paidDate || today(), complementoSubido: true })} />
                 </div>
-                <button className="btn btn-gr btn-sm mt12" onClick={() => save(t.id, { billingStatus: "pagado", paidDate: today(), complementoSubido: true })}>
+                <button className="btn btn-gr btn-sm mt12" onClick={() => save(t.id, { billingStatus: "pagado", paidDate: t.paidDate || today(), complementoSubido: true })}>
                   ✓ Marcar pagado c/Complemento
                 </button>
               </div>
