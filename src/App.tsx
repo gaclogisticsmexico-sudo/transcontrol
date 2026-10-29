@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from "firebase/firestore";
@@ -3314,8 +3314,10 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
   );
 }
 
-function AdminClientes({ trips, razones }) {
+function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpdateCP, quien, tarifario, onUpsertTarifa }) {
   const [selRS, setSelRS] = useState("all"); const [search, setSearch] = useState("");
+  const [abierto, setAbierto] = useState(null);      // id del servicio desplegado
+  const [verMonto, setVerMonto] = useState(false);
   const [dlMonth, setDlMonth] = useState(nowMon()); const [downloading, setDownloading] = useState(null);
   const ft = trips.filter(t => selRS === "all" || t.razonSocialId === selRS);
   const clients = [...new Set(ft.map(t => t.client).filter(Boolean))].sort().filter(c => c.toLowerCase().includes(search.toLowerCase()));
@@ -3376,14 +3378,24 @@ function AdminClientes({ trips, razones }) {
                           const dias = daysSince(t.date);
                           const venc = (t.billingStatus || "sin_facturar") !== "pagado" && t.amount > 0 && dias > 30;
                           return (
-                            <tr key={t.id} style={{ background: venc ? "#ef444408" : "transparent" }}>
-                              <td style={{ whiteSpace: "nowrap" }}>{fmtDate(t.date)}</td>
+                            <Fragment key={t.id}>
+                            <tr style={{ background: abierto === t.id ? "var(--bg3)" : venc ? "#ef444408" : "transparent", cursor: onUpdate ? "pointer" : "default" }}
+                              title={onUpdate ? "Toca para ligar la factura y ver su cobro" : ""}
+                              onClick={() => { if (!onUpdate) return; setAbierto(abierto === t.id ? null : t.id); setVerMonto(false); }}>
+                              <td style={{ whiteSpace: "nowrap" }}>{onUpdate ? (abierto === t.id ? "▾ " : "▸ ") : ""}{fmtDate(t.date)}</td>
                               <td className="tsm">{t.origin} → {t.destination}</td>
                               <td><strong style={{ color: "var(--green)" }}>{t.amount ? fmt$(t.amount) : "—"}</strong></td>
                               <td><BillingBadge v={t.billingStatus || "sin_facturar"} mp={t.metodoPago} /></td>
                               <td className="tsm txt2">{t.invoiceNumber || "—"}</td>
                               <td className="tsm" style={{ color: venc ? "var(--red)" : "var(--txt2)" }}>{dias !== null ? `${dias}d` : "—"}</td>
                             </tr>
+                            {abierto === t.id && onUpdate && (
+                              <tr><td colSpan={6} style={{ padding: 0 }}>
+                                <ServicioCobranza t={t} vehicles={vehicles} cartasPorte={cartasPorte} onUpdate={onUpdate} onUpdateCP={onUpdateCP}
+                                  quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} verMonto={verMonto} setVerMonto={setVerMonto} />
+                              </td></tr>
+                            )}
+                            </Fragment>
                           );
                         })}
                       </tbody>
@@ -3395,6 +3407,50 @@ function AdminClientes({ trips, razones }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function ServicioCobranza({ t, vehicles, cartasPorte, onUpdate, onUpdateCP, quien, tarifario, onUpsertTarifa, verMonto, setVerMonto }) {
+  const [otro, setOtro] = useState("");
+  const cands = cfdisParaServicio(t, cartasPorte, vehicles);
+  const sueltas = (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id && String(r.fecha || "") >= INICIO_OPERACIONES)
+    .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const etq = r => `${r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} ${r.folio} · ${r.receptor || "?"}${Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)}` : ""} · ${fmtDate(String(r.fecha_servicio || r.fecha || "").slice(0, 10))}`;
+  const ligar = async r => {
+    if (!confirm(`¿Ligar ${r.tipo === "I" ? "la factura" : "la carta porte"} ${r.folio} a este servicio (${fmtDate(t.date)} · ${t.origin} → ${t.destination})?`)) return;
+    if (await ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien })) setOtro("");
+  };
+  return (
+    <div style={{ background: "var(--bg3)", borderLeft: "4px solid var(--amber)", padding: 12, position: "sticky", left: 0,
+      maxWidth: "calc(100vw - 48px)", boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
+      <div className="flex aic jb wrap gap8 mb8">
+        <div className="tsm"><b>{t.client}</b> · {t.origin} → {t.destination}{t.driverName ? ` · ${t.driverName}` : ""}
+          {t.docNum ? ` · CP ${t.docNum}` : t.sinCartaPorte ? " · sin carta porte" : ""}{t.invoiceNumber ? ` · Fact ${t.invoiceNumber}` : ""}</div>
+        <button className="btn btn-g btn-sm" onClick={() => setVerMonto(!verMonto)}>💲 {t.amount ? "Cambiar monto" : "Poner monto"}</button>
+      </div>
+      {verMonto && <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setVerMonto(false)} />}
+      {cartasPorte && (
+        <div className="mb8">
+          <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>🔗 Facturas y cartas porte de Facturama sin ligar que le cuadran</div>
+          {cands.length === 0 && <div className="tsm txt2 mb4">No encontré una que cuadre por cliente, monto o fecha.</div>}
+          <div className="flex gap4 wrap">
+            {cands.map(({ r, por }) => (
+              <button key={r.id} className="btn btn-gr btn-sm" style={{ whiteSpace: "normal", textAlign: "left", maxWidth: "100%" }} onClick={() => ligar(r)}>
+                {etq(r)} <span className="tsm">({por.join(", ")})</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex gap4 wrap mt8 aic">
+            <select value={otro} onChange={e => setOtro(e.target.value)} style={{ maxWidth: "100%", width: 460 }}>
+              <option value="">Otra factura o carta porte sin ligar…</option>
+              {sueltas.slice(0, 100).map(r => <option key={r.id} value={r.id}>{etq(r)}</option>)}
+            </select>
+            <button className="btn btn-a btn-sm" disabled={!otro} onClick={() => { const r = sueltas.find(x => x.id === otro); if (r) ligar(r); }}>Ligar</button>
+          </div>
+        </div>
+      )}
+      <BillingPanel trip={t} onUpdate={onUpdate} />
     </div>
   );
 }
@@ -5737,6 +5793,63 @@ function puntajeCfdi(r, t, vehicles) {
   return { s, por };
 }
 
+// Liga un CFDI registrado por el bot (tr:cartas_porte) a un servicio, igual que
+// aplicar_cfdi_a_viaje del bot: factura = facturado con folio/UUID/metodo y el
+// monto si no tenia; carta porte = su folio en docNum. Devuelve true si quedo.
+async function ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien }) {
+  const ok1 = await onUpdateCP(r.id, { tc_trip_id: t.id, ligadoPor: `${quien || "App"} (app) ${today()}` });
+  if (ok1 === false) return false;
+  if (r.tipo === "I") {
+    const patch = {};
+    const bs = t.billingStatus || "sin_facturar";
+    if (["sin_facturar", "sin_factura"].includes(bs)) {
+      patch.billingStatus = "facturado"; patch.invoiceNumber = String(r.folio);
+      if (r.uuid) patch.invoiceUuid = r.uuid;
+      if (["PPD", "PUE"].includes(r.metodo_pago)) patch.metodoPago = r.metodo_pago;
+    } else if (!t.invoiceNumber) patch.invoiceNumber = String(r.folio);
+    const sub = Number(r.subtotal) || 0;
+    if (sub > 0 && !(Number(t.amount) > 0)) {
+      patch.amount = sub; patch.amountBase = sub; patch.sinFactura = false;
+      const tot = Number(r.total) || 0;
+      if (tot) patch.ivaRetention = Math.abs(tot - sub * 1.12) < Math.abs(tot - sub * 1.16);
+    }
+    if (Object.keys(patch).length) await onUpdate(t.id, patch);
+    if (sub > 0 && Number(t.amount) > 0 && Math.abs(sub - Number(t.amount)) > 1)
+      alert(`Ojo: la factura es por ${fmt$(sub)} de subtotal y el servicio tiene ${fmt$(t.amount)}. Revisa cuál queda.`);
+  } else if (r.folio) {
+    const previo = String(t.docNum || "").trim(); const f = String(r.folio);
+    const doc = !previo || previo === "0" ? f : foliosDe(previo).includes(folioCP(f)) ? previo : `${previo}, ${f}`;
+    await onUpdate(t.id, { docNum: doc, cpPendiente: false, sinCartaPorte: false });
+  }
+  return true;
+}
+
+// Para un servicio de la cobranza: facturas y cartas porte sin ligar que le
+// pueden corresponder, las mas probables primero (cliente, monto, fecha).
+function cfdisParaServicio(t, cartasPorte, vehicles) {
+  const cl = normTxt(t.client);
+  const amt = Number(t.amount) || 0;
+  return (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id).map(r => {
+    const fr = String(r.fecha_servicio || r.fecha || "").slice(0, 10);
+    const dias = fr && t.date ? Math.abs((new Date(t.date + "T12:00:00") - new Date(fr + "T12:00:00")) / 864e5) : 99;
+    const rec = normTxt(r.receptor);
+    let s = 0; const por = [];
+    if (r.tipo === "I") {
+      if (cl && rec && (rec.includes(cl) || cl.includes(rec.split(" ")[0]))) { s += 3; por.push("cliente"); }
+      const sub = Number(r.subtotal) || 0;
+      if (sub && amt && Math.abs(sub - amt) <= 1) { s += 4; por.push("mismo monto"); }
+      if (dias <= 7) { s += dias <= 1 ? 2 : 1; por.push(dias <= 1 ? "misma fecha" : "fecha cercana"); }
+      if (!s || (!por.includes("cliente") && !por.includes("mismo monto"))) return null;
+    } else {
+      if (t.sinCartaPorte || dias > 2) return null;
+      const p = puntajeCfdi(r, t, vehicles || []);
+      if (p.s < 3) return null;
+      s = p.s; por.push(...p.por);
+    }
+    return { r, s, por };
+  }).filter(Boolean).sort((a, b) => b.s - a.s).slice(0, 6);
+}
+
 function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifario, cartasPorte, gpsSin, gpsResp, quien,
   onUpdate, onUpsertTarifa, onUpdateCP, onUpdateOut, irA }) {
   const [abierto, setAbierto] = useState(null);       // {id, que: "datos"|"monto"|"cobro"}
@@ -5773,31 +5886,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   const cobranza = Object.values(porCliente).sort((a, b) => b.total - a.total);
 
   const ligar = async (r, t) => {
-    const ok1 = await onUpdateCP(r.id, { tc_trip_id: t.id, ligadoPor: `${quien || "Operaciones"} (app) ${today()}` });
-    if (ok1 === false) return;
-    if (r.tipo === "I") {
-      const patch = {};
-      const bs = t.billingStatus || "sin_facturar";
-      if (["sin_facturar", "sin_factura"].includes(bs)) {
-        patch.billingStatus = "facturado"; patch.invoiceNumber = String(r.folio);
-        if (r.uuid) patch.invoiceUuid = r.uuid;
-        if (["PPD", "PUE"].includes(r.metodo_pago)) patch.metodoPago = r.metodo_pago;
-      } else if (!t.invoiceNumber) patch.invoiceNumber = String(r.folio);
-      const sub = Number(r.subtotal) || 0;
-      if (sub > 0 && !(Number(t.amount) > 0)) {
-        patch.amount = sub; patch.amountBase = sub; patch.sinFactura = false;
-        const tot = Number(r.total) || 0;
-        if (tot) patch.ivaRetention = Math.abs(tot - sub * 1.12) < Math.abs(tot - sub * 1.16);
-      }
-      if (Object.keys(patch).length) await onUpdate(t.id, patch);
-      if (sub > 0 && Number(t.amount) > 0 && Math.abs(sub - Number(t.amount)) > 1)
-        alert(`Ojo: la factura es por ${fmt$(sub)} de subtotal y el servicio tiene ${fmt$(t.amount)}. Revisa cuál queda.`);
-    } else if (r.folio) {
-      const previo = String(t.docNum || "").trim(); const f = String(r.folio);
-      const doc = !previo || previo === "0" ? f : foliosDe(previo).includes(folioCP(f)) ? previo : `${previo}, ${f}`;
-      await onUpdate(t.id, { docNum: doc, cpPendiente: false, sinCartaPorte: false });
-    }
-    setLigando(null); setEleccion("");
+    if (await ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien })) { setLigando(null); setEleccion(""); }
   };
   const ligarTercerizado = async (r, o) => {
     const ok1 = await onUpdateCP(r.id, { tc_out_id: o.id, ligadoPor: `${quien || "Operaciones"} (app) ${today()}` });
@@ -6045,7 +6134,8 @@ function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdate
         {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
-        {tab === "clientes" && <AdminClientes trips={trips} razones={razones} />}
+        {tab === "clientes" && <AdminClientes trips={trips} razones={razones} vehicles={vehicles} cartasPorte={cartasPorte}
+          onUpdate={onUpdate} onUpdateCP={onUpdateCP} quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tercerizados" && <AdminTercerizados verMargen={!esOp} outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
         {tab === "cuentas-prov" && <AdminCuentasProveedor outsourced={outsourced} providers={providers} razones={razones} trips={trips} onUpdate={onUpdate} onUpdateOut={onUpdateOut} />}
         {tab === "financiero" && !esOp && <AdminFinanciero trips={trips} expenses={expenses} outsourced={outsourced} razones={razones} onSaveExpenses={onSaveExpenses} />}
