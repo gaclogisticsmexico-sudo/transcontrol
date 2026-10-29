@@ -443,7 +443,8 @@ const tripsConFolio = (trips, docNum, excluirId) => {
   const fs = foliosDe(docNum);
   return fs.length ? (trips || []).filter(t => t.id !== excluirId && foliosDe(t.docNum).some(x => fs.includes(x))) : [];
 };
-const cpPendiente = t => !foliosDe(t.docNum).length && (t.cpPendiente || (t.tripStatus || "completado") === "completado");
+// sinCartaPorte: se marco que el servicio NO llevo carta porte (29-oct-2026): no es pendiente
+const cpPendiente = t => !t.sinCartaPorte && !foliosDe(t.docNum).length && (t.cpPendiente || (t.tripStatus || "completado") === "completado");
 const hhmm = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const ESTADO_VIAJE = {
   completado: ["bg", "✅ Completado"], en_ruta: ["bb", "🚚 En ruta"], en_curso: ["br", "🔄 A medias"],
@@ -462,6 +463,7 @@ function TripFlags({ t, razones }) {
   return (
     <>
       {cpPendiente(t) && <span className="badge br" style={st} title="Sin folio de carta porte">📄 CP pendiente</span>}
+      {t.sinCartaPorte && !foliosDe(t.docNum).length && <span className="badge bg" style={st} title="Se marcó que este servicio no llevó carta porte">🚫 Sin CP (no llevó)</span>}
       {sinRS && <span className="badge ba" style={st} title="Sin razón social">🏢 Sin RS</span>}
       {t.canal === "whatsapp" && <span className="badge bg" style={st} title="Capturado por WhatsApp">💬 WhatsApp</span>}
       {t.folioWeb && <span className="badge bb" style={st} title="Folio de cotización web">🌐 {t.folioWeb}</span>}
@@ -3014,14 +3016,16 @@ function TripBaseEditor({ t, trips, drivers, vehicles, razones, clients, onUpdat
     client: t.client || "", date: t.date || "", origin: t.origin || "", destination: t.destination || "",
     driverId: t.driverId || "", vehicleId: t.vehicleId || "", razonSocialId: t.razonSocialId || "",
     docNum: t.docNum || "", tripStatus: t.tripStatus || "completado", leftAt: t.leftAt || "",
+    sinCartaPorte: !!t.sinCartaPorte,
   });
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const ETQ = { client: "Cliente", date: "Fecha", origin: "Origen", destination: "Destino", driverId: "Chofer (inicio)",
-    vehicleId: "Unidad (inicio)", razonSocialId: "Razón social", docNum: "Carta porte", tripStatus: "Estado", leftAt: "Dónde quedó" };
+    vehicleId: "Unidad (inicio)", razonSocialId: "Razón social", docNum: "Carta porte", tripStatus: "Estado", leftAt: "Dónde quedó",
+    sinCartaPorte: "No llevó carta porte" };
   const ver = (k, v) => k === "driverId" ? (drivers.find(d => d.id === v)?.name || v || "—")
     : k === "vehicleId" ? (vehicles.find(x => x.id === v)?.plates || v || "—")
     : k === "razonSocialId" ? (razones.find(r => r.id === v)?.short || (v ? v : "Sin RS"))
-    : k === "tripStatus" ? (ESTADO_VIAJE[v]?.[1] || v) : (v || "—");
+    : k === "tripStatus" ? (ESTADO_VIAJE[v]?.[1] || v) : k === "sinCartaPorte" ? (v ? "Sí" : "No") : (v || "—");
   const guardar = async () => {
     if (!f.date || !f.client.trim() || !f.origin.trim() || !f.destination.trim()) { alert("Fecha, cliente, origen y destino no pueden quedar vacíos."); return; }
     const dup = tripsConFolio(trips, f.docNum, t.id);
@@ -3033,11 +3037,13 @@ function TripBaseEditor({ t, trips, drivers, vehicles, razones, clients, onUpdat
       if (v !== String(t[k] || (k === "tripStatus" ? "completado" : "")).trim()) patch[k] = v;
     });
     if (f.tripStatus !== "completado" && f.leftAt.trim() !== (t.leftAt || "")) patch.leftAt = f.leftAt.trim();
+    if (f.sinCartaPorte !== !!t.sinCartaPorte) patch.sinCartaPorte = f.sinCartaPorte;
     if (!Object.keys(patch).length) { onDone(); return; }
     const lista = Object.keys(patch).map(k => `• ${ETQ[k]}: ${ver(k, t[k])} → ${ver(k, patch[k])}`).join("\n");
     if (!confirm(`¿Guardar estos cambios en el viaje ${rotulo(t)}?\n\n${lista}`)) return;
     if (patch.driverId !== undefined) patch.driverName = drivers.find(d => d.id === patch.driverId)?.name || "";
-    if (patch.docNum !== undefined && foliosDe(patch.docNum).length) patch.cpPendiente = false;
+    if (patch.docNum !== undefined && foliosDe(patch.docNum).length) { patch.cpPendiente = false; if (t.sinCartaPorte) patch.sinCartaPorte = false; }
+    if (patch.sinCartaPorte) patch.cpPendiente = false;
     if (patch.tripStatus === "en_patio" && !patioAbierto(t)) patch.retiro = { ...(t.retiro || {}), patio: f.leftAt.trim(), partidas: t.retiro?.partidas ?? null, cerrado: false };
     if (patch.tripStatus === "completado" && !t.arriveTime && t.tripStatus === "en_ruta") patch.arriveTime = hhmm();
     if (await onUpdate(t.id, patch)) onDone();
@@ -3057,7 +3063,13 @@ function TripBaseEditor({ t, trips, drivers, vehicles, razones, clients, onUpdat
         <Field label="Chofer (inicio)"><select value={f.driverId} onChange={set("driverId")}><option value="">—</option>{drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
         <Field label="Unidad (inicio)"><select value={f.vehicleId} onChange={set("vehicleId")}><option value="">—</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.plates}</option>)}</select></Field>
         <Field label="Razón social"><select value={f.razonSocialId} onChange={set("razonSocialId")}><option value="">Sin RS</option>{razones.map(r => <option key={r.id} value={r.id}>{r.short}</option>)}</select></Field>
-        <Field label="No. carta porte"><input value={f.docNum} onChange={set("docNum")} placeholder="Ej: 1587" /></Field>
+        <Field label="No. carta porte">
+          <input value={f.docNum} onChange={set("docNum")} placeholder="Ej: 1587" disabled={f.sinCartaPorte} />
+          <label className="tsm flex aic gap4 mt4" style={{ cursor: "pointer" }}>
+            <input type="checkbox" checked={f.sinCartaPorte} onChange={e => setF(p => ({ ...p, sinCartaPorte: e.target.checked, ...(e.target.checked ? { docNum: "" } : {}) }))} />
+            🚫 Este servicio no llevó carta porte
+          </label>
+        </Field>
         <Field label="Estado del viaje"><select value={f.tripStatus} onChange={set("tripStatus")}>{estados.map(k => <option key={k} value={k}>{ESTADO_VIAJE[k][1]}</option>)}</select></Field>
         {(f.tripStatus === "en_curso" || f.tripStatus === "en_patio") && <Field label="¿Dónde quedó?"><input value={f.leftAt} onChange={set("leftAt")} placeholder="Patio / bodega" /></Field>}
       </div>
@@ -5704,7 +5716,7 @@ function faltaCaptura(t) {
   if (!String(t.client || "").trim()) f.push("cliente");
   if (!t.razonSocialId) f.push("razón social");
   if (!(Number(t.amount) > 0)) f.push("monto");
-  if (!foliosDe(t.docNum).length && !t.invoiceNumber && (t.cpPendiente || (t.tripStatus || "completado") === "completado")) f.push("carta porte");
+  if (!t.sinCartaPorte && !foliosDe(t.docNum).length && !t.invoiceNumber && (t.cpPendiente || (t.tripStatus || "completado") === "completado")) f.push("carta porte");
   return f;
 }
 
@@ -5783,7 +5795,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
     } else if (r.folio) {
       const previo = String(t.docNum || "").trim(); const f = String(r.folio);
       const doc = !previo || previo === "0" ? f : foliosDe(previo).includes(folioCP(f)) ? previo : `${previo}, ${f}`;
-      await onUpdate(t.id, { docNum: doc, cpPendiente: false });
+      await onUpdate(t.id, { docNum: doc, cpPendiente: false, sinCartaPorte: false });
     }
     setLigando(null); setEleccion("");
   };
@@ -5835,6 +5847,10 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
                 <div className="flex gap4 wrap">
                   <button className="btn btn-g btn-sm" onClick={() => setAbierto(abierto?.id === t.id && abierto.que === "datos" ? null : { id: t.id, que: "datos" })}>✏️ Datos y carta porte</button>
                   <button className="btn btn-g btn-sm" onClick={() => setAbierto(abierto?.id === t.id && abierto.que === "monto" ? null : { id: t.id, que: "monto" })}>💲 Monto</button>
+                  {faltaCaptura(t).includes("carta porte") && (
+                    <button className="btn btn-g btn-sm" title="Marca que este servicio se hizo sin carta porte"
+                      onClick={() => confirm(`¿Marcar que ${resumen(t)} NO llevó carta porte?`) && onUpdate(t.id, { sinCartaPorte: true, cpPendiente: false })}>🚫 No llevó CP</button>
+                  )}
                 </div>
               </div>
               {abierto?.id === t.id && abierto.que === "datos" && <TripBaseEditor t={t} trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} clients={clients} onUpdate={onUpdate} onDone={() => setAbierto(null)} />}
@@ -5847,7 +5863,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
       {tarjeta({ titulo: "📄 Cartas porte y facturas de Facturama sin ligar a un servicio", n: sueltas.length, color: "var(--blue, #2563eb)", clave: "cfdi", children: (<>
         <div className="fcol gap8">
           {sueltas.slice(0, 30).map(r => {
-            const cands = recientes.map(t => ({ t, ...puntajeCfdi(r, t, vehicles) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s).slice(0, 4);
+            const cands = recientes.filter(t => r.tipo === "I" || !t.sinCartaPorte).map(t => ({ t, ...puntajeCfdi(r, t, vehicles) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s).slice(0, 4);
             return (
               <div key={r.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
                 <div style={{ fontWeight: 700 }}>{r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} {r.folio} · {r.receptor || "?"}{Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)} sin IVA` : ""}</div>
