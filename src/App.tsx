@@ -444,6 +444,22 @@ const patioAbierto = t => !!(t.retiro && !t.retiro.cerrado);
 // Abierto = todavía no se entrega: en ruta (WhatsApp), a medias o mercancía en patio.
 const tripAbierto = t => t.tripStatus === "en_ruta" || t.tripStatus === "en_curso" || patioAbierto(t);
 const normTxt = x => String(x || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
+const limpiaNombre = x => String(x || "").trim().replace(/\s+/g, " ");
+// Un cliente por nombre aunque varíe en acentos, mayúsculas o espacios ("SERMAR "
+// y "SERMAR" salían como dos): se queda la forma más usada en esos servicios.
+const clientesUnicos = lista => {
+  const g = {};
+  lista.forEach(t => { const k = normTxt(t.client); if (!k) return; const v = limpiaNombre(t.client); g[k] = g[k] || {}; g[k][v] = (g[k][v] || 0) + 1; });
+  return Object.values(g).map(c => Object.entries(c).sort((a, b) => b[1] - a[1])[0][0]);
+};
+// El nombre con el que se guarda: el del catálogo (nombre u otros nombres), si no
+// la forma ya usada en servicios, si no el texto limpio. Igual que tc.nombre_cliente del bot.
+const nombreCliente = (nombre, clients, trips) => {
+  const k = normTxt(nombre);
+  const c = (clients || []).find(x => [x.name, ...(x.aliases || [])].some(n => n && normTxt(n) === k));
+  if (c) return limpiaNombre(c.name);
+  return clientesUnicos(trips || []).find(n => normTxt(n) === k) || limpiaNombre(nombre);
+};
 // Folio de carta porte normalizado igual que el bot (folio_cp_norm): sin "CP-",
 // mayúsculas; vacío o "0" no cuentan. Un docNum puede traer varios ("1341, 1404").
 const folioCP = f => { const x = String(f || "").replace(/^\s*(cp|c\.p\.|carta\s*porte)\s*[-#:]?\s*/i, "").trim().toUpperCase(); return ["", "0", "N/A", "NA", "-"].includes(x) ? "" : x; };
@@ -3352,10 +3368,10 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
   const [verMonto, setVerMonto] = useState(false);
   const [dlMonth, setDlMonth] = useState(nowMon()); const [downloading, setDownloading] = useState(null);
   const ft = trips.filter(t => selRS === "all" || t.razonSocialId === selRS);
-  const clients = [...new Set(ft.map(t => t.client).filter(Boolean))].sort().filter(c => c.toLowerCase().includes(search.toLowerCase()));
+  const clients = clientesUnicos(ft).sort().filter(c => normTxt(c).includes(normTxt(search)));
   const handleDownload = async (client) => {
     setDownloading(client);
-    const clientTrips = ft.filter(t => t.client === client && (t.date || "").startsWith(dlMonth));
+    const clientTrips = ft.filter(t => normTxt(t.client) === normTxt(client) && (t.date || "").startsWith(dlMonth));
     if (!clientTrips.length) { alert("No hay viajes en ese mes para este cliente."); setDownloading(null); return; }
     await downloadClientZip(client, dlMonth, clientTrips);
     setDownloading(null);
@@ -3380,7 +3396,7 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
       {!clients.length ? <Empty title="Sin clientes" sub="No hay servicios registrados" /> : (
         <div className="fcol gap12">
           {clients.map(client => {
-            const ct = ft.filter(t => t.client === client);
+            const ct = ft.filter(t => normTxt(t.client) === normTxt(client));
             const total = ct.reduce((s, t) => s + (Number(t.amount) || 0), 0);
             const paid = ct.filter(t => (t.billingStatus || "sin_facturar") === "pagado").reduce((s, t) => s + (Number(t.amount) || 0), 0);
             const ov30 = ct.filter(t => (t.billingStatus || "sin_facturar") !== "pagado" && t.amount > 0 && daysSince(t.date) > 30);
@@ -5913,8 +5929,8 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   // 5) Cobranza por cliente (lo facturado o en efectivo que no se ha cobrado)
   const porCliente = {};
   trips.filter(t => ["facturado", "sin_factura"].includes(t.billingStatus) && Number(t.amount) > 0).forEach(t => {
-    const k = t.client || "(sin cliente)";
-    const x = porCliente[k] || (porCliente[k] = { cliente: k, total: 0, vencido: 0, n: 0 });
+    const k = normTxt(t.client);
+    const x = porCliente[k] || (porCliente[k] = { cliente: limpiaNombre(t.client) || "(sin cliente)", total: 0, vencido: 0, n: 0 });
     x.total += totalTrip(t); x.n += 1;
     if ((daysSince(t.date) || 0) > 30) x.vencido += totalTrip(t);
   });
@@ -6342,21 +6358,31 @@ export default function App() {
   const DIST = arrOps("tr:distributions", v => setDistributions(v || []), distributions);
   const TAR = arrOps("tr:tarifario", v => setTarifario(v || []), tarifario);
   const CPO = arrOps("tr:cartas_porte", v => setCartasPorte(v || []), cartasPorte);
-  const addTrip = T.add;
+  // Todo servicio se guarda con el nombre único del cliente, sin importar la pantalla
+  const conCliente = x => (x?.client ? { ...x, client: nombreCliente(x.client, clients, tripsAll) } : x);
+  const addTrip = t => T.add(conCliente(t));
   const addChecada = CH.add;
-  const updTrip = T.upd;
+  const updTrip = (id, p) => T.upd(id, conCliente(p));
   const delTrip = T.del;
   const addIns = INS.add;
   const delIns = INS.del;
   const resolveInspection = id => INS.upd(id, { resolved: true, resolvedAt: today() });
-  const addOut = OUT.add;
-  const updOut = OUT.upd;
+  const addOut = o => OUT.add(conCliente(o));
+  const updOut = (id, p) => OUT.upd(id, conCliente(p));
   const delOut = OUT.del;
   const saveExps = EXP.save;
   const saveVehicles = VEH.save;
   const saveDrivers = DRV.save;
   const saveRazones = RS.save;
-  const saveClients = CLI.save;
+  // El catálogo no acepta dos clientes con el mismo nombre (ni variando acentos o espacios)
+  const saveClients = (next, removeIds) => {
+    const lista = (next || []).map(c => ({ ...c, name: limpiaNombre(c.name) }));
+    const antes = new Map((clients || []).map(c => [c.id, normTxt(c.name)]));
+    const nuevo = lista.find(c => normTxt(c.name) && antes.get(c.id) !== normTxt(c.name));
+    const otro = nuevo && lista.find(o => o.id !== nuevo.id && [o.name, ...(o.aliases || [])].some(n => n && normTxt(n) === normTxt(nuevo.name)));
+    if (otro) { alert(`Ya existe el cliente ${otro.name}${otro.active === false ? " (está desactivado, actívalo)" : ""}. No se guardó otro igual.`); return Promise.resolve(false); }
+    return CLI.save(lista, removeIds);
+  };
   const saveProviders = PRV.save;
   const saveInstructions = INSTR.save;
   const saveSchedule = SCH.save;
@@ -6373,10 +6399,10 @@ export default function App() {
   const updDistribution = DIST.upd;
   const saveTarifario = TAR.save;
   const delTarifa = TAR.del;
-  const upsertTarifa = (clientName, origin, destination, base, extras) => { const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
+  const upsertTarifa = (nombre, origin, destination, base, extras) => { const clientName = nombreCliente(nombre, clients, tripsAll); const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
     const prev = fresh || [];
-    const key = `${clientName}||${origin}||${destination}`.toLowerCase();
-    const existing = prev.find(t => `${t.clientName}||${t.origin}||${t.destination}`.toLowerCase() === key);
+    const key = `${normTxt(clientName)}||${origin}||${destination}`.toLowerCase();
+    const existing = prev.find(t => `${normTxt(t.clientName)}||${t.origin}||${t.destination}`.toLowerCase() === key);
     const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
     return existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
   }, []).then(done); };
