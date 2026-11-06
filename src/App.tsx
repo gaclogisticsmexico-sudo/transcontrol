@@ -460,6 +460,17 @@ const nombreCliente = (nombre, clients, trips) => {
   if (c) return limpiaNombre(c.name);
   return clientesUnicos(trips || []).find(n => normTxt(n) === k) || limpiaNombre(nombre);
 };
+// El tarifario va por ruta y unidad. La unidad es el modelo: las dos NP300 cobran igual.
+const modeloUnidad = (t, vehicles) => limpiaNombre((vehicles || []).find(v => v.id === t.vehicleId)?.model);
+const mismaRuta = (a, b) => normTxt(a.clientName ?? a.client) === normTxt(b.clientName ?? b.client) && normTxt(a.origin) === normTxt(b.origin) && normTxt(a.destination) === normTxt(b.destination);
+// De un servicio: la tarifa de su unidad (o la de cualquier unidad) y las de otras unidades.
+const tarifasDe = (tarifario, t, vehicles) => {
+  const ruta = (tarifario || []).filter(x => mismaRuta(x, t));
+  const u = normTxt(modeloUnidad(t, vehicles));
+  const suya = ruta.find(x => u && normTxt(x.unidad) === u) || ruta.find(x => !x.unidad);
+  return { suya, otras: ruta.filter(x => x !== suya && x.unidad) };
+};
+const totalTarifa = x => x.base + (x.extras || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
 // Folio de carta porte normalizado igual que el bot (folio_cp_norm): sin "CP-",
 // mayúsculas; vacío o "0" no cuentan. Un docNum puede traer varios ("1341, 1404").
 const folioCP = f => { const x = String(f || "").replace(/^\s*(cp|c\.p\.|carta\s*porte)\s*[-#:]?\s*/i, "").trim().toUpperCase(); return ["", "0", "N/A", "NA", "-"].includes(x) ? "" : x; };
@@ -2905,9 +2916,9 @@ function BillingPanel({ trip, onUpdate }) {
 
 // Editor de monto con servicio base + extras (patio regulador, demoras, maniobras...) para la pestaña Viajes.
 // Mismo modelo de datos que QuickAmountRow del Cierre (amountBase/amountExtras). Si se cambia uno, sincronizar el otro.
-function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
-  const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
-  const suggestion = tarifario?.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key);
+function TripAmountEditor({ t, vehicles, onUpdate, tarifario, onUpsertTarifa, onDone }) {
+  const unidad = modeloUnidad(t, vehicles);
+  const { suya: suggestion, otras } = tarifasDe(tarifario, t, vehicles);
   const [base, setBase] = useState(t.amountBase || t.amount || "");
   const [extras, setExtras] = useState(t.amountExtras || []);
   const [newDesc, setNewDesc] = useState("");
@@ -2930,17 +2941,18 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
     onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret,
       ...((bs0 === "sin_facturar" || bs0 === "sin_factura") ? { billingStatus: sinFact ? "sin_factura" : "sin_facturar" } : {}) });
     if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
-      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
+      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras, unidad);
     onDone && onDone();
   };
   return (
     <div className="fcol gap4" style={{ flex: 1 }}>
       {suggestion && (
         <div className="tsm" style={{ color: "var(--green)" }}>
-          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras || []).reduce((s, e) => s + (Number(e.amount) || 0), 0))}
+          💡 Tarifario{suggestion.unidad ? ` ${suggestion.unidad}` : ""}: {fmt$(totalTarifa(suggestion))}
           <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras || []); }}>Usar</button>
         </div>
       )}
+      {otras.length > 0 && <div className="tsm txt2">Otras unidades: {otras.map(x => `${x.unidad} ${fmt$(totalTarifa(x))}`).join(" · ")}</div>}
       <Field label="Servicio base ($) *">
         <input type="number" placeholder="0.00" value={base} onChange={e => setBase(e.target.value)} autoFocus />
       </Field>
@@ -2975,7 +2987,7 @@ function TripAmountEditor({ t, onUpdate, tarifario, onUpsertTarifa, onDone }) {
       {t.client && t.origin && t.destination && (
         <div className="flex aic gap8">
           <ChkBox checked={saveTar} onChange={() => setSaveTar(p => !p)} />
-          <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination})</span>
+          <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination}{unidad ? ` · ${unidad}` : ""})</span>
         </div>
       )}
       <div className="flex gap4">
@@ -3319,7 +3331,7 @@ function AdminViajes({ trips, gpsKm, cargasComb, vehicles, drivers, razones, cli
                 </div>
                 <div className="flex aic gap8 wrap">
                   {editing ? (
-                    <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa}
+                    <TripAmountEditor t={t} vehicles={vehicles} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa}
                       onDone={() => setEditAmt(p => { const n = { ...p }; delete n[t.id]; return n; })} />
                   ) : (
                     <div className="fcol gap2" style={{ flex: 1 }}>
@@ -3477,7 +3489,7 @@ function ServicioCobranza({ t, vehicles, cartasPorte, onUpdate, onUpdateCP, quie
           {t.docNum ? ` · CP ${t.docNum}` : t.sinCartaPorte ? " · sin carta porte" : ""}{t.invoiceNumber ? ` · Fact ${t.invoiceNumber}` : ""}</div>
         <button className="btn btn-g btn-sm" onClick={() => setVerMonto(!verMonto)}>💲 {t.amount ? "Cambiar monto" : "Poner monto"}</button>
       </div>
-      {verMonto && <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setVerMonto(false)} />}
+      {verMonto && <TripAmountEditor t={t} vehicles={vehicles} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setVerMonto(false)} />}
       {cartasPorte && (
         <div className="mb8">
           <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>🔗 Facturas y cartas porte de Facturama sin ligar que le cuadran</div>
@@ -4176,9 +4188,9 @@ function PendingSection({ title, color, icon, items, total, emptyMsg, renderItem
   );
 }
 
-function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
-  const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
-  const suggestion = tarifario?.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key);
+function QuickAmountRow({ t, vehicles, onUpdate, razones, tarifario, onUpsertTarifa }) {
+  const unidad = modeloUnidad(t, vehicles);
+  const { suya: suggestion, otras } = tarifasDe(tarifario, t, vehicles);
   const [base, setBase] = useState(t.amountBase || (suggestion?.base) || "");
   const [extras, setExtras] = useState(t.amountExtras || (suggestion?.extras) || []);
   const [newDesc, setNewDesc] = useState("");
@@ -4202,7 +4214,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
     onUpdate(t.id, { amount: total, amountBase: baseNum, amountExtras: extras, sinFactura: sinFact, ivaRetention: !sinFact && ret,
       ...((bs0 === "sin_facturar" || bs0 === "sin_factura") ? { billingStatus: sinFact ? "sin_factura" : "sin_facturar" } : {}) });
     if (saveTar && onUpsertTarifa && t.client && t.origin && t.destination)
-      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras);
+      onUpsertTarifa(t.client, t.origin, t.destination, baseNum, extras, unidad);
     setExpanded(false);
   };
   return (
@@ -4219,10 +4231,11 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
       <div className="tsm txt2 mt2">🤝 {t.client}</div>
       {suggestion && !expanded && (
         <div className="tsm mt6" style={{ color: "var(--green)" }}>
-          💡 Tarifario: {fmt$(suggestion.base + (suggestion.extras||[]).reduce((s,e)=>s + (Number(e.amount) || 0),0))} (servicio {fmt$(suggestion.base)}{suggestion.extras?.length ? ` + ${suggestion.extras.length} extra(s)` : ""})
+          💡 Tarifario{suggestion.unidad ? ` ${suggestion.unidad}` : ""}: {fmt$(totalTarifa(suggestion))} (servicio {fmt$(suggestion.base)}{suggestion.extras?.length ? ` + ${suggestion.extras.length} extra(s)` : ""})
           <button className="btn btn-g btn-sm ml8" onClick={() => { setBase(suggestion.base); setExtras(suggestion.extras||[]); setExpanded(true); }}>Usar</button>
         </div>
       )}
+      {otras.length > 0 && <div className="tsm txt2">Otras unidades: {otras.map(x => `${x.unidad} ${fmt$(totalTarifa(x))}`).join(" · ")}</div>}
       {expanded && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
           <Field label="Servicio base ($) *">
@@ -4260,7 +4273,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
           {t.client && t.origin && t.destination && (
             <div className="flex aic gap8 mt8">
               <ChkBox checked={saveTar} onChange={() => setSaveTar(p=>!p)} />
-              <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination})</span>
+              <span className="tsm txt2">Guardar en tarifario ({t.client} · {t.origin} → {t.destination}{unidad ? ` · ${unidad}` : ""})</span>
             </div>
           )}
           <button className="btn btn-a mt10" onClick={save} disabled={total <= 0}>✓ Guardar monto y continuar</button>
@@ -4270,7 +4283,7 @@ function QuickAmountRow({ t, onUpdate, razones, tarifario, onUpsertTarifa }) {
   );
 }
 
-function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, tarifario, onUpsertTarifa }) {
+function AdminPendientes({ trips, outsourced, vehicles, razones, onUpdate, onUpdateOut, tarifario, onUpsertTarifa }) {
   const [mk, setMk] = useState("__past");
   const [selRS, setSelRS] = useState("all");
   const [selClient, setSelClient] = useState("");
@@ -4435,7 +4448,7 @@ function AdminPendientes({ trips, outsourced, razones, onUpdate, onUpdateOut, ta
         items={sinMonto}
         total={0}
         emptyMsg="Todos los servicios tienen monto asignado ✓"
-        renderItem={t => <QuickAmountRow key={t.id} t={t} onUpdate={onUpdate} razones={razones} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
+        renderItem={t => <QuickAmountRow key={t.id} t={t} vehicles={vehicles} onUpdate={onUpdate} razones={razones} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
       />
       <PendingSection
         title="Paso 2 — Con monto · pendiente emitir factura CFDI"
@@ -4955,31 +4968,37 @@ function AdminComplementos({ trips, onUpdate }) {
   );
 }
 
-function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete }) {
+function AdminTarifario({ tarifario, trips, vehicles, onUpsertTarifa, onUpdTarifa, onDelete }) {
   const [search, setSearch] = useState("");
   const [selClient, setSelClient] = useState("all");
   const [editId, setEditId] = useState(null);
   const [editData, setEditData] = useState({});
   const clientNames = [...new Set(tarifario.map(t => t.clientName))].sort();
+  const modelos = [...new Set((vehicles || []).filter(v => v.active !== false && !v.prueba).map(v => limpiaNombre(v.model)).filter(Boolean))].sort();
+  const ponUnidad = (tar, unidad) => {
+    if (tarifario.some(x => x.id !== tar.id && mismaRuta(x, tar) && normTxt(x.unidad) === normTxt(unidad))) { alert("Esa ruta ya tiene tarifa para esa unidad."); return; }
+    onUpdTarifa(tar.id, { unidad });
+  };
+  const orden = x => [x.clientName, x.origin, x.destination, x.unidad].map(normTxt).join("|");
   const filtered = tarifario.filter(t =>
     (selClient === "all" || t.clientName === selClient) &&
     ((t.clientName || "").toLowerCase().includes(search.toLowerCase()) ||
      (t.origin || "").toLowerCase().includes(search.toLowerCase()) ||
-     (t.destination || "").toLowerCase().includes(search.toLowerCase()))
-  ).sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")) || String(a.origin || "").localeCompare(String(b.origin || "")));
+     (t.destination || "").toLowerCase().includes(search.toLowerCase()) ||
+     (t.unidad || "").toLowerCase().includes(search.toLowerCase()))
+  ).sort((a, b) => orden(a).localeCompare(orden(b)));
 
-  // Import from trip history — find client+route combinations not yet in tarifario
+  // Import from trip history — find client+route+unit combinations not yet in tarifario
   const importFromHistory = () => {
     const map = {};
     trips.filter(t => t.client && t.origin && t.destination && t.amount > 0).forEach(t => {
-      const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
+      const key = [t.client, t.origin, t.destination, modeloUnidad(t, vehicles)].map(normTxt).join("||");
       if (!map[key] || t.date > map[key].date) map[key] = t;
     });
     let added = 0;
     Object.values(map).forEach(t => {
-      const key = `${t.client}||${t.origin}||${t.destination}`.toLowerCase();
-      if (!tarifario.find(x => `${x.clientName}||${x.origin}||${x.destination}`.toLowerCase() === key)) {
-        onUpsertTarifa(t.client, t.origin, t.destination, t.amountBase || t.amount, t.amountExtras || []);
+      if (!tarifasDe(tarifario, t, vehicles).suya) {
+        onUpsertTarifa(t.client, t.origin, t.destination, t.amountBase || t.amount, t.amountExtras || [], modeloUnidad(t, vehicles));
         added++;
       }
     });
@@ -4989,15 +5008,15 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
   return (
     <div className="ap">
       <div className="flex aic jb mb12 wrap gap8">
-        <div className="stitle" style={{ margin: 0 }}>📋 Tarifario por Cliente / Ruta</div>
+        <div className="stitle" style={{ margin: 0 }}>📋 Tarifario por Cliente / Ruta / Unidad</div>
         <div className="flex gap8">
           <button className="btn btn-g btn-sm" onClick={importFromHistory}>⬇ Importar del historial</button>
         </div>
       </div>
-      <div className="tsm txt2 mb12">Precios de referencia por cliente y ruta. Se actualizan automáticamente al asignar montos en el cierre.</div>
+      <div className="tsm txt2 mb12">Precios de referencia por cliente, ruta y unidad. Se actualizan automáticamente al asignar montos en el cierre.</div>
 
       <div className="g2 mb12">
-        <Field label="Buscar"><input placeholder="Cliente, origen o destino..." value={search} onChange={e => setSearch(e.target.value)} /></Field>
+        <Field label="Buscar"><input placeholder="Cliente, origen, destino o unidad..." value={search} onChange={e => setSearch(e.target.value)} /></Field>
         <Field label="Filtrar por cliente">
           <select value={selClient} onChange={e => setSelClient(e.target.value)}>
             <option value="all">Todos los clientes</option>
@@ -5013,14 +5032,18 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
       ) : (
         <div className="fcol gap8">
           {filtered.map(tar => {
-            const extTotal = (tar.extras||[]).reduce((s,e) => s + (Number(e.amount) || 0), 0);
-            const total = tar.base + extTotal;
+            const total = totalTarifa(tar);
+            const extTotal = total - tar.base;
             return (
               <div key={tar.id} className="card">
                 <div className="flex aic jb mb4">
                   <div>
                     <div style={{ fontWeight: 700 }}>{tar.clientName}</div>
                     <div style={{ fontWeight: 600, color: "var(--txt2)" }}>{tar.origin} → {tar.destination}</div>
+                    <select className="mt4" aria-label="Unidad de esta tarifa" value={tar.unidad || ""} onChange={e => ponUnidad(tar, e.target.value)} style={{ width: "auto", maxWidth: "100%" }}>
+                      <option value="">Cualquier unidad</option>
+                      {[...new Set([...modelos, ...(tar.unidad ? [tar.unidad] : [])])].map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
                   </div>
                   <div className="fcol" style={{ alignItems: "flex-end" }}>
                     <div style={{ fontWeight: 800, fontSize: 18, color: "var(--green)" }}>{fmt$(total)}</div>
@@ -5045,7 +5068,7 @@ function AdminTarifario({ tarifario, trips, clients, onUpsertTarifa, onDelete })
                         </div>
                       </details>
                     )}
-                    <button className="btn btn-g btn-sm" title="Eliminar tarifa" onClick={() => { if (onDelete && confirm(`¿Eliminar la tarifa ${tar.clientName} · ${tar.origin} → ${tar.destination}?`)) onDelete(tar.id); }}>🗑</button>
+                    <button className="btn btn-g btn-sm" title="Eliminar tarifa" onClick={() => { if (onDelete && confirm(`¿Eliminar la tarifa ${tar.clientName} · ${tar.origin} → ${tar.destination}${tar.unidad ? ` · ${tar.unidad}` : ""}?`)) onDelete(tar.id); }}>🗑</button>
                   </div>
                 </div>
               </div>
@@ -5994,7 +6017,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
                 </div>
               </div>
               {abierto?.id === t.id && abierto.que === "datos" && <TripBaseEditor t={t} trips={trips} drivers={drivers} vehicles={vehicles} razones={razones} clients={clients} onUpdate={onUpdate} onDone={() => setAbierto(null)} />}
-              {abierto?.id === t.id && abierto.que === "monto" && <TripAmountEditor t={t} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setAbierto(null)} />}
+              {abierto?.id === t.id && abierto.que === "monto" && <TripAmountEditor t={t} vehicles={vehicles} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setAbierto(null)} />}
             </div>
           ))}
         </div>
@@ -6104,7 +6127,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   );
 }
 
-function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const esOp = rol === "operaciones";
   const [tab, setTab] = useState(esOp ? "midia" : "dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -6179,8 +6202,8 @@ function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdate
         {tab === "flota" && <AdminFlota gpsKm={gpsKm} cargasComb={cargasComb} mantenimientos={mantenimientos} vehicles={vehicles} expenses={expenses} trips={trips} />}
         {tab === "dashboard" && !esOp && <AdminDashboard trips={trips} vehicles={vehicles} drivers={drivers} expenses={expenses} outsourced={outsourced} razones={razones} inspections={inspections} />}
         {tab === "socios" && !esOp && <AdminSocios trips={trips} expenses={expenses} outsourced={outsourced} socios={socios} distributions={distributions} onSaveSocios={onSaveSocios} onAddDistribution={onAddDistribution} onUpdDistribution={onUpdDistribution} />}
-        {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
-        {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} clients={clients} onUpsertTarifa={onUpsertTarifa} onDelete={onDeleteTarifa} />}
+        {tab === "pendientes" && <AdminPendientes trips={trips} outsourced={outsourced} vehicles={vehicles} razones={razones} onUpdate={onUpdate} onUpdateOut={onUpdateOut} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
+        {tab === "tarifario" && <AdminTarifario tarifario={tarifario} trips={trips} vehicles={vehicles} onUpsertTarifa={onUpsertTarifa} onUpdTarifa={onUpdTarifa} onDelete={onDeleteTarifa} />}
         {tab === "forecast" && !esOp && <AdminForecast trips={trips} outsourced={outsourced} expenses={expenses} />}
         {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
@@ -6399,14 +6422,13 @@ export default function App() {
   const updDistribution = DIST.upd;
   const saveTarifario = TAR.save;
   const delTarifa = TAR.del;
-  const upsertTarifa = (nombre, origin, destination, base, extras) => { const clientName = nombreCliente(nombre, clients, tripsAll); const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
+  const upsertTarifa = (nombre, origin, destination, base, extras, unidad = "") => { const clientName = nombreCliente(nombre, clients, tripsAll); const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
     const prev = fresh || [];
-    const key = `${normTxt(clientName)}||${origin}||${destination}`.toLowerCase();
-    // Primero la ruta tal cual; si no, la misma sin importar espacios o acentos ("Aifa " y "AIFA" hacían dos tarifas)
-    const ruta = (c, o, d) => [c, o, d].map(normTxt).join("||");
-    const existing = prev.find(t => `${normTxt(t.clientName)}||${t.origin}||${t.destination}`.toLowerCase() === key)
-      || prev.find(t => ruta(t.clientName, t.origin, t.destination) === ruta(clientName, origin, destination));
-    const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
+    // Una tarifa por ruta y unidad, sin importar espacios o acentos. Si ya hay una
+    // para cualquier unidad con ese precio, no hace falta otra.
+    const ruta = prev.filter(t => mismaRuta(t, { clientName, origin, destination }));
+    const existing = ruta.find(t => normTxt(t.unidad) === normTxt(unidad)) || ruta.find(t => !t.unidad && Number(t.base) === Number(base));
+    const entry = { id: existing?.id || genId(), clientName, origin, destination, unidad: existing ? existing.unidad || "" : unidad, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
     return existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
   }, []).then(done); };
 
@@ -6477,7 +6499,7 @@ export default function App() {
       onSaveClients={saveClients} onSaveProviders={saveProviders}
       onUpdateInstant={updateInstant} onAddStatusRequest={addStatusRequest}
       onSaveSocios={saveSocios} onAddDistribution={addDistribution} onUpdDistribution={updDistribution}
-      onUpsertTarifa={upsertTarifa} saveTarifario={saveTarifario} onDeleteTarifa={delTarifa}
+      onUpsertTarifa={upsertTarifa} onUpdTarifa={TAR.upd} saveTarifario={saveTarifario} onDeleteTarifa={delTarifa}
       onResolveInspection={resolveInspection} onDeleteInspection={delIns} onLogout={() => signOut(auth)}
       verPrueba={verPrueba} nPrueba={nPrueba} onToggleVerPrueba={() => setVerPrueba(p => !p)} /></>
   );
