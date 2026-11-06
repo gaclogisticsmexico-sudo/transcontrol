@@ -6402,7 +6402,10 @@ export default function App() {
   const upsertTarifa = (nombre, origin, destination, base, extras) => { const clientName = nombreCliente(nombre, clients, tripsAll); const done = ok(v => setTarifario(v || []), "tr:tarifario"); return txDoc("tr:tarifario", fresh => {
     const prev = fresh || [];
     const key = `${normTxt(clientName)}||${origin}||${destination}`.toLowerCase();
-    const existing = prev.find(t => `${normTxt(t.clientName)}||${t.origin}||${t.destination}`.toLowerCase() === key);
+    // Primero la ruta tal cual; si no, la misma sin importar espacios o acentos ("Aifa " y "AIFA" hacían dos tarifas)
+    const ruta = (c, o, d) => [c, o, d].map(normTxt).join("||");
+    const existing = prev.find(t => `${normTxt(t.clientName)}||${t.origin}||${t.destination}`.toLowerCase() === key)
+      || prev.find(t => ruta(t.clientName, t.origin, t.destination) === ruta(clientName, origin, destination));
     const entry = { id: existing?.id || genId(), clientName, origin, destination, base, extras: extras || [], lastUpdated: today(), history: [...(existing?.history||[]).slice(-9), { date: today(), base, extras }] };
     return existing ? prev.map(t => t.id === entry.id ? entry : t) : [...prev, entry];
   }, []).then(done); };
