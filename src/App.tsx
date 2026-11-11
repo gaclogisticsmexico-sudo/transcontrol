@@ -3475,6 +3475,9 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
 // DATOS FISCALES (11-nov-2026, para Franco): razón social, RFC, CP, régimen y
 // uso CFDI de cada cliente, a la mano para facturar. Solo lectura: las altas y
 // cambios siguen por el bot ("da de alta al cliente X con RFC ...").
+// Junta 3 fuentes: el catálogo del código del bot (lo publica al arrancar en
+// tr:catalogo_fiscal), las altas por el bot (tr:clientes_fiscales) y el RFC
+// del catálogo de clientes de la app (tr:clients). Un RFC sale una sola vez.
 // ═══════════════════════════════════════════════════════════════
 const REGIMENES = {
   "601": "General de Ley Personas Morales", "603": "Personas Morales con Fines no Lucrativos",
@@ -3495,14 +3498,32 @@ function BotonCopiar({ texto, etiqueta = "📋" }) {
   return <button className="btn btn-g btn-sm" title="Copiar" onClick={copiar} style={{ padding: "2px 8px" }}>{ok ? "✓ Copiado" : etiqueta}</button>;
 }
 
-function DatosFiscales({ clientesFiscales }) {
+function unirFiscales(catalogoFiscal, clientesFiscales, clients) {
+  const grupos = []; const porRfc = {}; const porApodo = {};
+  const meter = (apodos, r, origen) => {
+    const rfc = String(r?.rfc || "").toUpperCase().replace(/\s/g, "");
+    apodos = (apodos || []).map(a => String(a || "").trim()).filter(Boolean);
+    if (!rfc && !r?.nombre) return;
+    let g = (rfc && porRfc[rfc]) || apodos.map(a => porApodo[normTxt(a)]).find(Boolean);
+    if (!g) { g = { apodos: [], razones: [] }; grupos.push(g); }
+    apodos.forEach(a => { if (!g.apodos.some(x => normTxt(x) === normTxt(a))) g.apodos.push(a); porApodo[normTxt(a)] = g; });
+    let x = rfc ? g.razones.find(y => y.rfc === rfc) : null;
+    if (!x) { x = { nombre: "", rfc, cp: "", regimen: "", uso: "", origen }; g.razones.push(x); }
+    ["nombre", "cp", "regimen", "uso"].forEach(k => { if (!x[k] && r[k]) x[k] = String(r[k]); });
+    if (rfc) porRfc[rfc] = g;
+  };
+  (catalogoFiscal || []).forEach(c => (c.razones || []).forEach(r => meter(c.apodos || [c.apodo], r, "bot")));
+  (clientesFiscales || []).forEach(c => (c.razones || []).forEach(r => meter([c.apodo], r, "bot")));
+  (clients || []).filter(c => c.active !== false && String(c.rfc || "").trim()).forEach(c => meter([c.name], { rfc: c.rfc }, "app"));
+  return grupos.map(g => ({ ...g, apodo: g.apodos[0] || "" }));
+}
+
+function DatosFiscales({ clientesFiscales, catalogoFiscal, clients }) {
   const [q, setQ] = useState("");
   const qq = normTxt(q);
-  const lista = (clientesFiscales || [])
-    .map(c => ({ ...c, razones: (c.razones || []).filter(r => r && (r.rfc || r.nombre)) }))
-    .filter(c => c.razones.length)
-    .filter(c => !qq || normTxt([c.apodo, ...c.razones.flatMap(r => [r.nombre, r.rfc, r.cp])].join(" ")).includes(qq))
-    .sort((a, b) => String(a.apodo || "").localeCompare(String(b.apodo || "")));
+  const lista = unirFiscales(catalogoFiscal, clientesFiscales, clients)
+    .filter(c => !qq || normTxt([...c.apodos, ...c.razones.flatMap(r => [r.nombre, r.rfc, r.cp])].join(" ")).includes(qq))
+    .sort((a, b) => String(a.apodo).localeCompare(String(b.apodo)));
   const nRs = lista.reduce((s, c) => s + c.razones.length, 0);
   const todo = r => [r.nombre, `RFC: ${r.rfc}`, `CP: ${r.cp || "—"}`,
     `Régimen: ${r.regimen || "—"}${REGIMENES[r.regimen] ? " " + REGIMENES[r.regimen] : ""}`,
@@ -3516,16 +3537,17 @@ function DatosFiscales({ clientesFiscales }) {
       <input placeholder="Buscar por cliente, razón social o RFC…" value={q} onChange={e => setQ(e.target.value)}
         style={{ width: "100%", maxWidth: 480, marginBottom: 12 }} />
       <div className="tsm txt2 mb12">Toca 📋 para copiar un dato. Para dar de alta un cliente o corregir un RFC, pídeselo al bot por WhatsApp.</div>
-      {lista.length === 0 && <div className="card tsm txt2">{(clientesFiscales || []).length ? "Ningún cliente coincide con la búsqueda." : "Todavía no hay clientes con datos fiscales dados de alta."}</div>}
+      {lista.length === 0 && <div className="card tsm txt2">{q ? "Ningún cliente coincide con la búsqueda." : "Todavía no hay clientes con datos fiscales. El bot publica su catálogo al arrancar; si sigue vacío, avísale a Alan."}</div>}
       <div className="fcol gap8">
         {lista.map(c => (
           <div key={c.id || c.apodo} className="card">
-            <div style={{ fontWeight: 800, marginBottom: 6, textTransform: "uppercase" }}>{c.apodo || "(sin nombre)"}</div>
+            <div style={{ fontWeight: 800, marginBottom: 6, textTransform: "uppercase" }}>{c.apodo || "(sin nombre)"}
+              {c.apodos.length > 1 && <span className="tsm txt2" style={{ fontWeight: 400, textTransform: "none" }}> · también: {c.apodos.slice(1).join(", ")}</span>}</div>
             <div className="fcol gap8">
               {c.razones.map((r, i) => (
                 <div key={(r.rfc || "") + i} style={{ borderTop: i ? "1px solid var(--border)" : "none", paddingTop: i ? 8 : 0 }}>
                   <div className="flex aic gap8 wrap">
-                    <span style={{ fontWeight: 700 }}>{r.nombre || "(sin razón social)"}</span>
+                    <span style={{ fontWeight: 700 }}>{r.nombre || <span style={{ color: "var(--amber)" }}>Falta la razón social (solo está el RFC en el catálogo de clientes)</span>}</span>
                     {r.nombre && <BotonCopiar texto={r.nombre} />}
                   </div>
                   <div className="flex aic gap8 wrap mt4">
@@ -4094,7 +4116,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
           <div className="g2 mb8">
             <Field label="Nombre del cliente *"><input value={nc.name} onChange={e => setNc(p => ({ ...p, name: e.target.value }))} placeholder="Nombre de la empresa" onKeyDown={e => e.key === "Enter" && addC()} /></Field>
             <Field label="RFC (opcional)"><input value={nc.rfc} onChange={e => setNc(p => ({ ...p, rfc: e.target.value }))} placeholder="RFC del cliente" /></Field>
-            <Field label="Razón Social (RS asignada)">
+            <Field label="Factura desde (nuestra razón social: GACS / Cristian)">
               <select value={nc.razonSocialId||""} onChange={e => setNc(p => ({ ...p, razonSocialId: e.target.value }))}>
                 <option value="">Sin asignar</option>
                 {razones.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}
@@ -4113,7 +4135,7 @@ function AdminConfig({ trips, vehicles, drivers, clients, providers, razones, on
                   <div className="fcol gap6">
                     <Field label="Nombre *"><input value={editData.name||""} onChange={ed("name")} /></Field>
                     <Field label="RFC"><input value={editData.rfc||""} onChange={ed("rfc")} /></Field>
-                    <Field label="Razón Social">
+                    <Field label="Factura desde (nuestra razón social)">
                       <select value={editData.razonSocialId||""} onChange={ed("razonSocialId")}>
                         <option value="">Sin asignar</option>
                         {razones.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}
@@ -6327,7 +6349,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   );
 }
 
-function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, catalogoFiscal, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const esOp = rol === "operaciones";
   const [tab, setTab] = useState(esOp ? "midia" : "dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -6408,7 +6430,7 @@ function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, gpsSin,
         {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
-        {tab === "fiscales" && <DatosFiscales clientesFiscales={clientesFiscales} />}
+        {tab === "fiscales" && <DatosFiscales clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} clients={clients} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} vehicles={vehicles} cartasPorte={cartasPorte}
           onUpdate={onUpdate} onUpdateCP={onUpdateCP} quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tercerizados" && <AdminTercerizados verMargen={!esOp} outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
@@ -6450,6 +6472,7 @@ export default function App() {
   const [mantenimientos, setMantenimientos] = useState([]);
   const [cartasPorte, setCartasPorte] = useState([]);   // CFDI registrados por el bot (Mi día)
   const [clientesFiscales, setClientesFiscales] = useState([]);   // razones sociales + RFC (alta por el bot)
+  const [catalogoFiscal, setCatalogoFiscal] = useState([]);       // catálogo que vive en el código del bot
   const [gpsSin, setGpsSin] = useState({});           // recorridos GPS sin servicio (bot)
   const [gpsResp, setGpsResp] = useState([]);         // lo que ya contestaron los choferes
   // Datos de prueba (prueba:true, los genera el bot con choferes de prueba por
@@ -6509,6 +6532,7 @@ export default function App() {
           ...(info.rol === "chofer" ? [] : [
             listen("tr:cartas_porte", v => setCartasPorte(v || []), []),
             listen("tr:clientes_fiscales", v => setClientesFiscales(v || []), []),
+            listen("tr:catalogo_fiscal", v => setCatalogoFiscal(v || []), []),
             listen("tr:gps_sin_servicio", v => setGpsSin(v || {}), {}),
             listen("tr:gps_respuestas", v => setGpsResp(v || []), []),
           ]),
@@ -6691,7 +6715,7 @@ export default function App() {
   if (vista !== "admin" && vista !== "operaciones") return <LoginScreen />;
   const esOp = vista === "operaciones";
   return (
-    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} clientesFiscales={clientesFiscales} gpsSin={gpsSin} gpsResp={gpsResp}
+    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} gpsSin={gpsSin} gpsResp={gpsResp}
       onUpdateCP={CPO.upd} checadas={checadas} gpsKm={gpsKm} cargasComb={esOp ? [] : cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={esOp ? [] : expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
