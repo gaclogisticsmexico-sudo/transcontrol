@@ -3518,12 +3518,108 @@ function unirFiscales(catalogoFiscal, clientesFiscales, clients) {
   return grupos.map(g => ({ ...g, apodo: g.apodos[0] || "" }));
 }
 
-function DatosFiscales({ clientesFiscales, catalogoFiscal, clients }) {
+// Igual que clientes_config.sin_regimen_capital del bot: el CFDI 4.0 lleva la
+// razón social SIN el régimen de capital ("X SA DE CV" -> "X").
+const SUFIJOS_CAPITAL = ["SAPI DE CV", "S A P I DE C V", "SAPI", "S DE RL DE CV", "S DE R L DE C V", "SRL DE CV", "S DE RL", "SRL",
+  "SA DE CV", "S A DE C V", "SC DE RL DE CV", "SAS DE CV", "SAS", "SA", "S A", "SC", "S C", "AC", "A C", "DE CV", "DE C V"];
+function sinRegimenCapital(nombre) {
+  const limpio = String(nombre || "").toUpperCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+  let n = limpio, cambio = true;
+  while (cambio) {
+    cambio = false;
+    for (const suf of SUFIJOS_CAPITAL) if (n.endsWith(" " + suf)) { n = n.slice(0, -(suf.length + 1)).trim(); cambio = true; break; }
+  }
+  return n || limpio;
+}
+const RFC_OK = r => /^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(r);
+
+// Cliente del catálogo de la app (tr:clients) que corresponde a un nombre/apodo.
+const clienteDeNombre = (clients, nombres) => (clients || []).find(c =>
+  [c.name, ...(c.aliases || [])].some(n => n && nombres.some(x => normTxt(x) === normTxt(n))));
+
+function AltaFiscal({ inicial, razones, todos, clients, clientesFiscales, quien, onAddFiscal, onUpdFiscal, onSaveClients, onListo }) {
+  const cliTc = clienteDeNombre(clients, [inicial.apodo || ""]);
+  const [f, setF] = useState({ apodo: inicial.apodo || "", nombre: "", rfc: inicial.rfc || "", cp: "", regimen: "601", uso: "G03",
+    rsId: cliTc?.razonSocialId || "" });
+  const [guardando, setGuardando] = useState(false);
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const rfc = f.rfc.toUpperCase().replace(/[^A-ZÑ&0-9]/g, "");
+  const nombre = sinRegimenCapital(f.nombre);
+  const faltan = [!f.apodo.trim() && "cómo le dicen al cliente", !nombre && "razón social", !rfc && "RFC", !f.cp && "código postal"].filter(Boolean);
+  const avisos = [rfc && !RFC_OK(rfc) && "El RFC no tiene la forma correcta (12 o 13 caracteres).", f.cp && !/^\d{5}$/.test(f.cp) && "El código postal debe ser de 5 dígitos.",
+    rfc.length === 13 && ["601", "603"].includes(f.regimen) && "Un RFC de 13 caracteres es de persona FÍSICA: revisa el régimen (612 o 626).",
+    rfc.length === 12 && ["605", "612", "626"].includes(f.regimen) && f.regimen !== "626" && "Un RFC de 12 caracteres es de persona MORAL: revisa el régimen (601)."].filter(Boolean);
+  const guardar = async () => {
+    if (faltan.length) return alert("Falta: " + faltan.join(", ") + ".");
+    if (!RFC_OK(rfc)) return alert("Revisa el RFC: no tiene la forma correcta.");
+    if (!/^\d{5}$/.test(f.cp)) return alert("El código postal debe ser de 5 dígitos.");
+    const ya = todos.find(g => g.razones.some(r => r.rfc === rfc && r.nombre));
+    if (ya) return alert(`Ese RFC ya está dado de alta en el cliente ${ya.apodo.toUpperCase()}.`);
+    setGuardando(true);
+    const razon = { nombre, rfc, cp: f.cp, regimen: f.regimen, uso: f.uso };
+    const apodo = normTxt(f.apodo);
+    const previo = (clientesFiscales || []).find(c => normTxt(c.apodo) === apodo);
+    const ok = previo
+      ? await onUpdFiscal(previo.id, cur => ({ razones: [...(cur.razones || []).filter(r => r.rfc !== rfc), razon] }))
+      : await onAddFiscal({ id: genId(), apodo, razones: [razon], createdAt: new Date().toISOString(), createdBy: quien || "app", source: "app" });
+    if (ok === false) { setGuardando(false); return alert("No se pudo guardar. Revisa tu conexión o avísale a Alan (puede ser un permiso)."); }
+    // "Se le factura desde" vive en el catálogo de clientes de la app
+    const cli = clienteDeNombre(clients, [f.apodo]);
+    if (cli) {
+      const patch = { ...(f.rsId && f.rsId !== cli.razonSocialId ? { razonSocialId: f.rsId } : {}), ...(!cli.rfc ? { rfc } : {}) };
+      if (Object.keys(patch).length) await onSaveClients((clients || []).map(c => c.id === cli.id ? { ...c, ...patch } : c));
+    } else {
+      await onSaveClients([...(clients || []), { id: genId(), name: limpiaNombre(f.apodo).toUpperCase(), rfc, razonSocialId: f.rsId || "", active: true, source: "app" }]);
+    }
+    setGuardando(false);
+    onListo(apodo);
+  };
+  return (
+    <div className="card mb12" style={{ borderLeft: "4px solid var(--amber)" }}>
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>➕ Dar de alta datos fiscales</div>
+      <div className="tsm txt2 mb8">Cópialos de la Constancia de Situación Fiscal del cliente.</div>
+      <div className="g2 mb8">
+        <Field label="Cliente (como le dicen) *"><input value={f.apodo} onChange={set("apodo")} placeholder="Ej. KADIKA" /></Field>
+        <Field label="Razón social *"><input value={f.nombre} onChange={set("nombre")} placeholder="Tal cual la constancia" /></Field>
+        <Field label="RFC *"><input value={f.rfc} onChange={set("rfc")} placeholder="12 o 13 caracteres" style={{ textTransform: "uppercase", fontFamily: "monospace" }} /></Field>
+        <Field label="Código postal fiscal *"><input value={f.cp} onChange={e => setF(p => ({ ...p, cp: e.target.value.replace(/\D/g, "").slice(0, 5) }))} placeholder="5 dígitos" inputMode="numeric" /></Field>
+        <Field label="Régimen fiscal *">
+          <select value={f.regimen} onChange={set("regimen")}>{Object.entries(REGIMENES).map(([k, v]) => <option key={k} value={k}>{k} · {v}</option>)}</select>
+        </Field>
+        <Field label="Uso del CFDI">
+          <select value={f.uso} onChange={set("uso")}>{Object.entries(USOS_CFDI).map(([k, v]) => <option key={k} value={k}>{k} · {v}</option>)}</select>
+        </Field>
+        <Field label="Se le factura desde">
+          <select value={f.rsId} onChange={set("rsId")}>
+            <option value="">Sin asignar</option>
+            {(razones || []).filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.short}</option>)}
+          </select>
+        </Field>
+      </div>
+      {nombre && f.nombre.trim().toUpperCase() !== nombre && <div className="tsm txt2 mb8">Se guardará como <b>{nombre}</b> (la factura va sin "S.A. de C.V.").</div>}
+      {avisos.map(x => <div key={x} className="tsm mb4" style={{ color: "var(--amber)" }}>⚠ {x}</div>)}
+      <div className="flex gap8 mt8">
+        <button className="btn btn-a" disabled={guardando} onClick={guardar}>{guardando ? "Guardando…" : "✓ Guardar"}</button>
+        <button className="btn btn-g" disabled={guardando} onClick={() => onListo(null)}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function DatosFiscales({ clientesFiscales, catalogoFiscal, clients, razones, quien, onAddFiscal, onUpdFiscal, onSaveClients }) {
   const [q, setQ] = useState("");
+  const [alta, setAlta] = useState(null);   // {apodo, rfc} con el formulario abierto
   const qq = normTxt(q);
-  const lista = unirFiscales(catalogoFiscal, clientesFiscales, clients)
+  const todos = unirFiscales(catalogoFiscal, clientesFiscales, clients);
+  const lista = todos
     .filter(c => !qq || normTxt([...c.apodos, ...c.razones.flatMap(r => [r.nombre, r.rfc, r.cp])].join(" ")).includes(qq))
     .sort((a, b) => String(a.apodo).localeCompare(String(b.apodo)));
+  const facturaDesde = c => {
+    const cli = clienteDeNombre(clients, c.apodos);
+    const rs = cli?.razonSocialId && (razones || []).find(r => r.id === cli.razonSocialId);
+    return rs ? rs.short : null;
+  };
+  const puedeAlta = !!(onAddFiscal && onUpdFiscal && onSaveClients);
   const nRs = lista.reduce((s, c) => s + c.razones.length, 0);
   const todo = r => [r.nombre, `RFC: ${r.rfc}`, `CP: ${r.cp || "—"}`,
     `Régimen: ${r.regimen || "—"}${REGIMENES[r.regimen] ? " " + REGIMENES[r.regimen] : ""}`,
@@ -3532,17 +3628,30 @@ function DatosFiscales({ clientesFiscales, catalogoFiscal, clients }) {
     <div className="ap">
       <div className="flex aic jb mb12 wrap gap8">
         <div className="stitle" style={{ margin: 0 }}>🧾 Datos fiscales de clientes</div>
-        <span className="tsm txt2">{lista.length} cliente(s) · {nRs} razón(es) social(es)</span>
+        <div className="flex aic gap8 wrap">
+          <span className="tsm txt2">{lista.length} cliente(s) · {nRs} razón(es) social(es)</span>
+          {puedeAlta && !alta && <button className="btn btn-a btn-sm" onClick={() => setAlta({ apodo: q.trim(), rfc: "" })}>➕ Dar de alta</button>}
+        </div>
       </div>
       <input placeholder="Buscar por cliente, razón social o RFC…" value={q} onChange={e => setQ(e.target.value)}
         style={{ width: "100%", maxWidth: 480, marginBottom: 12 }} />
-      <div className="tsm txt2 mb12">Toca 📋 para copiar un dato. Para dar de alta un cliente o corregir un RFC, pídeselo al bot por WhatsApp.</div>
-      {lista.length === 0 && <div className="card tsm txt2">{q ? "Ningún cliente coincide con la búsqueda." : "Todavía no hay clientes con datos fiscales. El bot publica su catálogo al arrancar; si sigue vacío, avísale a Alan."}</div>}
+      <div className="tsm txt2 mb12">Toca 📋 para copiar un dato. Lo que des de alta aquí también lo usa el bot para facturar. Para corregir un RFC ya guardado, pídeselo a Alan o al bot.</div>
+      {alta && <AltaFiscal key={alta.apodo + "|" + alta.rfc} inicial={alta} razones={razones} todos={todos} clients={clients} clientesFiscales={clientesFiscales}
+        quien={quien} onAddFiscal={onAddFiscal} onUpdFiscal={onUpdFiscal} onSaveClients={onSaveClients}
+        onListo={apodo => { setAlta(null); if (apodo) setQ(apodo); }} />}
+      {lista.length === 0 && !alta && (
+        <div className="card tsm txt2">
+          {q ? <>No tengo datos fiscales guardados de <b>{q}</b>.{puedeAlta && <> <button className="btn btn-a btn-sm" style={{ marginLeft: 8 }} onClick={() => setAlta(RFC_OK(q.trim().toUpperCase()) ? { apodo: "", rfc: q.trim().toUpperCase() } : { apodo: q.trim(), rfc: "" })}>➕ Dar de alta sus datos</button></>}</>
+            : "Todavía no hay clientes con datos fiscales. El bot publica su catálogo al arrancar; si sigue vacío, avísale a Alan."}
+        </div>
+      )}
       <div className="fcol gap8">
         {lista.map(c => (
           <div key={c.id || c.apodo} className="card">
             <div style={{ fontWeight: 800, marginBottom: 6, textTransform: "uppercase" }}>{c.apodo || "(sin nombre)"}
               {c.apodos.length > 1 && <span className="tsm txt2" style={{ fontWeight: 400, textTransform: "none" }}> · también: {c.apodos.slice(1).join(", ")}</span>}</div>
+            {puedeAlta && <div style={{ float: "right" }}><button className="btn btn-g btn-sm" onClick={() => setAlta({ apodo: c.apodo, rfc: "" })}>➕ Otra razón social</button></div>}
+            <div className="tsm mb8">Se le factura desde: {facturaDesde(c) ? <span className="rs-pill">{facturaDesde(c)}</span> : <span style={{ color: "var(--amber)" }}>sin asignar</span>}</div>
             <div className="fcol gap8">
               {c.razones.map((r, i) => (
                 <div key={(r.rfc || "") + i} style={{ borderTop: i ? "1px solid var(--border)" : "none", paddingTop: i ? 8 : 0 }}>
@@ -3558,7 +3667,10 @@ function DatosFiscales({ clientesFiscales, catalogoFiscal, clients }) {
                   <div className="tsm txt2 mt4">
                     Régimen {r.regimen || "—"}{REGIMENES[r.regimen] ? ` · ${REGIMENES[r.regimen]}` : ""} · Uso CFDI {r.uso || "—"}{USOS_CFDI[r.uso] ? ` · ${USOS_CFDI[r.uso]}` : ""}
                   </div>
-                  <div className="mt4"><BotonCopiar texto={todo(r)} etiqueta="📋 Copiar todo" /></div>
+                  <div className="mt4 flex gap8 wrap">
+                    {r.nombre ? <BotonCopiar texto={todo(r)} etiqueta="📋 Copiar todo" />
+                      : puedeAlta && <button className="btn btn-a btn-sm" onClick={() => setAlta({ apodo: c.apodo, rfc: r.rfc })}>✏️ Completar datos</button>}
+                  </div>
                 </div>
               ))}
             </div>
@@ -6349,7 +6461,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   );
 }
 
-function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, catalogoFiscal, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, catalogoFiscal, onAddFiscal, onUpdFiscal, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const esOp = rol === "operaciones";
   const [tab, setTab] = useState(esOp ? "midia" : "dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -6430,7 +6542,8 @@ function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, catalog
         {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
-        {tab === "fiscales" && <DatosFiscales clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} clients={clients} />}
+        {tab === "fiscales" && <DatosFiscales clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} clients={clients} razones={razones}
+          quien={quien} onAddFiscal={onAddFiscal} onUpdFiscal={onUpdFiscal} onSaveClients={onSaveClients} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} vehicles={vehicles} cartasPorte={cartasPorte}
           onUpdate={onUpdate} onUpdateCP={onUpdateCP} quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tercerizados" && <AdminTercerizados verMargen={!esOp} outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
@@ -6608,6 +6721,7 @@ export default function App() {
   const DIST = arrOps("tr:distributions", v => setDistributions(v || []), distributions);
   const TAR = arrOps("tr:tarifario", v => setTarifario(v || []), tarifario);
   const CPO = arrOps("tr:cartas_porte", v => setCartasPorte(v || []), cartasPorte);
+  const CFI = arrOps("tr:clientes_fiscales", v => setClientesFiscales(v || []), clientesFiscales);
   // Todo servicio se guarda con el nombre único del cliente, sin importar la pantalla
   const conCliente = x => (x?.client ? { ...x, client: nombreCliente(x.client, clients, tripsAll) } : x);
   const addTrip = t => T.add(conCliente(t));
@@ -6715,7 +6829,7 @@ export default function App() {
   if (vista !== "admin" && vista !== "operaciones") return <LoginScreen />;
   const esOp = vista === "operaciones";
   return (
-    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} gpsSin={gpsSin} gpsResp={gpsResp}
+    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} clientesFiscales={clientesFiscales} catalogoFiscal={catalogoFiscal} onAddFiscal={CFI.add} onUpdFiscal={CFI.upd} gpsSin={gpsSin} gpsResp={gpsResp}
       onUpdateCP={CPO.upd} checadas={checadas} gpsKm={gpsKm} cargasComb={esOp ? [] : cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={esOp ? [] : expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
