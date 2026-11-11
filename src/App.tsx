@@ -3471,6 +3471,82 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// DATOS FISCALES (11-nov-2026, para Franco): razón social, RFC, CP, régimen y
+// uso CFDI de cada cliente, a la mano para facturar. Solo lectura: las altas y
+// cambios siguen por el bot ("da de alta al cliente X con RFC ...").
+// ═══════════════════════════════════════════════════════════════
+const REGIMENES = {
+  "601": "General de Ley Personas Morales", "603": "Personas Morales con Fines no Lucrativos",
+  "605": "Sueldos y Salarios", "606": "Arrendamiento", "612": "Personas Físicas con Actividades Empresariales y Profesionales",
+  "616": "Sin obligaciones fiscales", "621": "Incorporación Fiscal", "625": "Plataformas Tecnológicas",
+  "626": "Régimen Simplificado de Confianza (RESICO)",
+};
+const USOS_CFDI = { G01: "Adquisición de mercancías", G03: "Gastos en general", S01: "Sin efectos fiscales", CP01: "Pagos", I08: "Otra maquinaria y equipo" };
+
+function BotonCopiar({ texto, etiqueta = "📋" }) {
+  const [ok, setOk] = useState(false);
+  const copiar = async e => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(texto); }
+    catch { const t = document.createElement("textarea"); t.value = texto; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
+    setOk(true); setTimeout(() => setOk(false), 1200);
+  };
+  return <button className="btn btn-g btn-sm" title="Copiar" onClick={copiar} style={{ padding: "2px 8px" }}>{ok ? "✓ Copiado" : etiqueta}</button>;
+}
+
+function DatosFiscales({ clientesFiscales }) {
+  const [q, setQ] = useState("");
+  const qq = normTxt(q);
+  const lista = (clientesFiscales || [])
+    .map(c => ({ ...c, razones: (c.razones || []).filter(r => r && (r.rfc || r.nombre)) }))
+    .filter(c => c.razones.length)
+    .filter(c => !qq || normTxt([c.apodo, ...c.razones.flatMap(r => [r.nombre, r.rfc, r.cp])].join(" ")).includes(qq))
+    .sort((a, b) => String(a.apodo || "").localeCompare(String(b.apodo || "")));
+  const nRs = lista.reduce((s, c) => s + c.razones.length, 0);
+  const todo = r => [r.nombre, `RFC: ${r.rfc}`, `CP: ${r.cp || "—"}`,
+    `Régimen: ${r.regimen || "—"}${REGIMENES[r.regimen] ? " " + REGIMENES[r.regimen] : ""}`,
+    `Uso CFDI: ${r.uso || "—"}${USOS_CFDI[r.uso] ? " " + USOS_CFDI[r.uso] : ""}`].join("\n");
+  return (
+    <div className="ap">
+      <div className="flex aic jb mb12 wrap gap8">
+        <div className="stitle" style={{ margin: 0 }}>🧾 Datos fiscales de clientes</div>
+        <span className="tsm txt2">{lista.length} cliente(s) · {nRs} razón(es) social(es)</span>
+      </div>
+      <input placeholder="Buscar por cliente, razón social o RFC…" value={q} onChange={e => setQ(e.target.value)}
+        style={{ width: "100%", maxWidth: 480, marginBottom: 12 }} />
+      <div className="tsm txt2 mb12">Toca 📋 para copiar un dato. Para dar de alta un cliente o corregir un RFC, pídeselo al bot por WhatsApp.</div>
+      {lista.length === 0 && <div className="card tsm txt2">{(clientesFiscales || []).length ? "Ningún cliente coincide con la búsqueda." : "Todavía no hay clientes con datos fiscales dados de alta."}</div>}
+      <div className="fcol gap8">
+        {lista.map(c => (
+          <div key={c.id || c.apodo} className="card">
+            <div style={{ fontWeight: 800, marginBottom: 6, textTransform: "uppercase" }}>{c.apodo || "(sin nombre)"}</div>
+            <div className="fcol gap8">
+              {c.razones.map((r, i) => (
+                <div key={(r.rfc || "") + i} style={{ borderTop: i ? "1px solid var(--border)" : "none", paddingTop: i ? 8 : 0 }}>
+                  <div className="flex aic gap8 wrap">
+                    <span style={{ fontWeight: 700 }}>{r.nombre || "(sin razón social)"}</span>
+                    {r.nombre && <BotonCopiar texto={r.nombre} />}
+                  </div>
+                  <div className="flex aic gap8 wrap mt4">
+                    <span className="tsm">RFC <b style={{ fontFamily: "monospace", fontSize: 14 }}>{r.rfc || "—"}</b></span>
+                    {r.rfc && <BotonCopiar texto={r.rfc} />}
+                    <span className="tsm txt2">CP <b>{r.cp || "—"}</b></span>
+                  </div>
+                  <div className="tsm txt2 mt4">
+                    Régimen {r.regimen || "—"}{REGIMENES[r.regimen] ? ` · ${REGIMENES[r.regimen]}` : ""} · Uso CFDI {r.uso || "—"}{USOS_CFDI[r.uso] ? ` · ${USOS_CFDI[r.uso]}` : ""}
+                  </div>
+                  <div className="mt4"><BotonCopiar texto={todo(r)} etiqueta="📋 Copiar todo" /></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ServicioCobranza({ t, trips, vehicles, cartasPorte, onUpdate, onUpdateCP, quien, tarifario, onUpsertTarifa, verMonto, setVerMonto }) {
   const [otro, setOtro] = useState("");
   const cands = cfdisParaServicio(t, cartasPorte, vehicles, trips);
@@ -6251,7 +6327,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   );
 }
 
-function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
+function AdminApp({ rol = "admin", quien, cartasPorte, clientesFiscales, gpsSin, gpsResp, onUpdateCP, checadas, gpsKm, cargasComb, mantenimientos, trips, inspections, vehicles, drivers, expenses, outsourced, razones, clients, providers, schedule, instructions, instant, socios, distributions, tarifario, onAdd, onUpdate, onDelete, onAddIns, onSaveExpenses, onAddOut, onUpdateOut, onDeleteOut, onSaveVehicles, onSaveDrivers, onSaveRazones, onSaveClients, onSaveProviders, onUpdateInstant, onAddStatusRequest, onResolveInspection, onDeleteInspection, onSaveSocios, onAddDistribution, onUpdDistribution, onUpsertTarifa, onUpdTarifa, saveTarifario, onDeleteTarifa, onLogout, verPrueba, nPrueba, onToggleVerPrueba }) {
   const esOp = rol === "operaciones";
   const [tab, setTab] = useState(esOp ? "midia" : "dashboard");
   const activeIssues = inspections.filter(i => i.issues && !i.resolved).length;
@@ -6278,7 +6354,7 @@ function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdate
     { id: "gastos", l: "🔍 Análisis gastos" },
     { id: "viajes", l: "🚛 Viajes" },
     { id: "complementos", l: `📋 Complementos${trips.filter(t=>t.metodoPago==="PPD"&&t.billingStatus==="facturado").length > 0 ? ` (${trips.filter(t=>t.metodoPago==="PPD"&&t.billingStatus==="facturado").length})` : ""}` },
-    { id: "clientes", l: "🤝 Clientes" }, { id: "tercerizados", l: "🔗 Tercerizados" }, { id: "cuentas-prov", l: "🚛 C. Proveedor" },
+    { id: "clientes", l: "🤝 Clientes" }, { id: "fiscales", l: "🧾 Datos fiscales" }, { id: "tercerizados", l: "🔗 Tercerizados" }, { id: "cuentas-prov", l: "🚛 C. Proveedor" },
     { id: "financiero", l: "💰 Financiero" }, { id: "conductores", l: "👤 Conductores" },
     { id: "unidades", l: "🚚 Unidades" },
     { id: "odometro", l: "🛣️ Odómetro" },
@@ -6287,7 +6363,7 @@ function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdate
   ];
   // Operaciones: lo del dia a dia, sin Panel/Dashboard (utilidad), Socios,
   // Forecast, Análisis de gastos, Financiero ni Config (razones, catálogos)
-  const PESTANAS_OP = ["midia", "viajes", "pendientes", "complementos", "clientes", "tercerizados", "cuentas-prov",
+  const PESTANAS_OP = ["midia", "viajes", "pendientes", "complementos", "clientes", "fiscales", "tercerizados", "cuentas-prov",
     "tarifario", "checador", "flota", "conductores", "unidades", "inspecciones", "disponib"];
   const tabs = esOp ? todas.filter(t => PESTANAS_OP.includes(t.id)) : todas;
 
@@ -6332,6 +6408,7 @@ function AdminApp({ rol = "admin", quien, cartasPorte, gpsSin, gpsResp, onUpdate
         {tab === "gastos" && !esOp && <AdminGastosAnalisis trips={trips} expenses={expenses} outsourced={outsourced} />}
         {tab === "viajes" && <AdminViajes trips={trips} gpsKm={gpsKm} cargasComb={cargasComb} vehicles={vehicles} drivers={drivers} razones={razones} clients={clients} onUpdate={onUpdate} onDelete={onDelete} onAdd={onAdd} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "complementos" && <AdminComplementos trips={trips} onUpdate={onUpdate} />}
+        {tab === "fiscales" && <DatosFiscales clientesFiscales={clientesFiscales} />}
         {tab === "clientes" && <AdminClientes trips={trips} razones={razones} vehicles={vehicles} cartasPorte={cartasPorte}
           onUpdate={onUpdate} onUpdateCP={onUpdateCP} quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} />}
         {tab === "tercerizados" && <AdminTercerizados verMargen={!esOp} outsourced={outsourced} razones={razones} clients={clients} providers={providers} onAdd={onAddOut} onUpdate={onUpdateOut} onDelete={onDeleteOut} />}
@@ -6372,6 +6449,7 @@ export default function App() {
   const [gpsPos, setGpsPos] = useState({ v: [] });    // posicion actual de las unidades (bot)
   const [mantenimientos, setMantenimientos] = useState([]);
   const [cartasPorte, setCartasPorte] = useState([]);   // CFDI registrados por el bot (Mi día)
+  const [clientesFiscales, setClientesFiscales] = useState([]);   // razones sociales + RFC (alta por el bot)
   const [gpsSin, setGpsSin] = useState({});           // recorridos GPS sin servicio (bot)
   const [gpsResp, setGpsResp] = useState([]);         // lo que ya contestaron los choferes
   // Datos de prueba (prueba:true, los genera el bot con choferes de prueba por
@@ -6430,6 +6508,7 @@ export default function App() {
           listen("tr:mantenimientos", v => setMantenimientos(v || []), []),
           ...(info.rol === "chofer" ? [] : [
             listen("tr:cartas_porte", v => setCartasPorte(v || []), []),
+            listen("tr:clientes_fiscales", v => setClientesFiscales(v || []), []),
             listen("tr:gps_sin_servicio", v => setGpsSin(v || {}), {}),
             listen("tr:gps_respuestas", v => setGpsResp(v || []), []),
           ]),
@@ -6612,7 +6691,7 @@ export default function App() {
   if (vista !== "admin" && vista !== "operaciones") return <LoginScreen />;
   const esOp = vista === "operaciones";
   return (
-    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} gpsSin={gpsSin} gpsResp={gpsResp}
+    <>{barra}<AdminApp rol={vista} quien={userInfo?.nombre} cartasPorte={cartasPorte} clientesFiscales={clientesFiscales} gpsSin={gpsSin} gpsResp={gpsResp}
       onUpdateCP={CPO.upd} checadas={checadas} gpsKm={gpsKm} cargasComb={esOp ? [] : cargasComb} mantenimientos={mantenimientos} trips={trips} inspections={inspections} vehicles={vehicles} drivers={drivers}
       expenses={esOp ? [] : expenses} outsourced={outsourced} razones={razones} clients={clients} providers={providers}
       schedule={schedule} instructions={instructions} instant={instant}
