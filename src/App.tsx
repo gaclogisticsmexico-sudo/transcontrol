@@ -3451,7 +3451,7 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
                             </tr>
                             {abierto === t.id && onUpdate && (
                               <tr><td colSpan={6} style={{ padding: 0 }}>
-                                <ServicioCobranza t={t} vehicles={vehicles} cartasPorte={cartasPorte} onUpdate={onUpdate} onUpdateCP={onUpdateCP}
+                                <ServicioCobranza t={t} trips={trips} vehicles={vehicles} cartasPorte={cartasPorte} onUpdate={onUpdate} onUpdateCP={onUpdateCP}
                                   quien={quien} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} verMonto={verMonto} setVerMonto={setVerMonto} />
                               </td></tr>
                             )}
@@ -3471,15 +3471,25 @@ function AdminClientes({ trips, razones, vehicles, cartasPorte, onUpdate, onUpda
   );
 }
 
-function ServicioCobranza({ t, vehicles, cartasPorte, onUpdate, onUpdateCP, quien, tarifario, onUpsertTarifa, verMonto, setVerMonto }) {
+function ServicioCobranza({ t, trips, vehicles, cartasPorte, onUpdate, onUpdateCP, quien, tarifario, onUpsertTarifa, verMonto, setVerMonto }) {
   const [otro, setOtro] = useState("");
-  const cands = cfdisParaServicio(t, cartasPorte, vehicles);
-  const sueltas = (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id && String(r.fecha || "") >= INICIO_OPERACIONES)
+  const cands = cfdisParaServicio(t, cartasPorte, vehicles, trips);
+  const sueltas = (cartasPorte || []).filter(r => ((!r.tc_trip_id && !r.tc_out_id) || (facturaIncompleta(r, trips) && !viajesDeCfdi(r).includes(t.id)))
+    && String(r.fecha || "") >= INICIO_OPERACIONES)
     .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
-  const etq = r => `${r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} ${r.folio} · ${r.receptor || "?"}${Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)}` : ""} · ${fmtDate(String(r.fecha_servicio || r.fecha || "").slice(0, 10))}`;
+  const etq = r => {
+    const am = r.tipo === "I" ? amparoFactura(r, trips) : null;
+    return `${r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} ${r.folio} · ${r.receptor || "?"}${Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)}` : ""} · ${fmtDate(String(r.fecha_servicio || r.fecha || "").slice(0, 10))}`
+      + (am && am.ids.length ? ` · ya ampara ${am.ids.length} servicio(s), faltan ${fmt$(am.falta)}` : "");
+  };
+  // Otros servicios que ya trae la factura de este servicio (si ampara varios).
+  const miFactura = (cartasPorte || []).find(r => r.tipo === "I" && viajesDeCfdi(r).includes(t.id));
+  const amMia = miFactura ? amparoFactura(miFactura, trips) : null;
   const ligar = async r => {
-    if (!confirm(`¿Ligar ${r.tipo === "I" ? "la factura" : "la carta porte"} ${r.folio} a este servicio (${fmtDate(t.date)} · ${t.origin} → ${t.destination})?`)) return;
-    if (await ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien })) setOtro("");
+    const am = r.tipo === "I" ? amparoFactura(r, trips) : null;
+    const extra = am && am.ids.length ? `\n\nEsa factura ya ampara ${am.ids.length} servicio(s) por ${fmt$(am.suma)}; con este quedaría en ${fmt$(am.suma + (Number(t.amount) || 0))} de ${fmt$(am.sub)}.` : "";
+    if (!confirm(`¿Ligar ${r.tipo === "I" ? "la factura" : "la carta porte"} ${r.folio} a este servicio (${fmtDate(t.date)} · ${t.origin} → ${t.destination})?${extra}`)) return;
+    if (await ligarCfdiAViaje(r, t, { trips, onUpdate, onUpdateCP, quien })) setOtro("");
   };
   return (
     <div style={{ background: "var(--bg3)", borderLeft: "4px solid var(--amber)", padding: 12, position: "sticky", left: 0,
@@ -3490,6 +3500,12 @@ function ServicioCobranza({ t, vehicles, cartasPorte, onUpdate, onUpdateCP, quie
         <button className="btn btn-g btn-sm" onClick={() => setVerMonto(!verMonto)}>💲 {t.amount ? "Cambiar monto" : "Poner monto"}</button>
       </div>
       {verMonto && <TripAmountEditor t={t} vehicles={vehicles} onUpdate={onUpdate} tarifario={tarifario} onUpsertTarifa={onUpsertTarifa} onDone={() => setVerMonto(false)} />}
+      {amMia && amMia.ids.length > 1 && (
+        <div className="tsm mb8" style={{ color: Math.abs(amMia.falta) > 1 ? "var(--amber)" : "var(--green)" }}>
+          🧾 La factura {miFactura.folio} ampara {amMia.ids.length} servicios: {amMia.ligados.map(x => `${fmtDate(x.date)} ${fmt$(Number(x.amount) || 0)}`).join(" + ")} = {fmt$(amMia.suma)} de {fmt$(amMia.sub)}
+          {Math.abs(amMia.falta) > 1 ? (amMia.falta > 0 ? ` · faltan ${fmt$(amMia.falta)}` : ` · se pasan ${fmt$(-amMia.falta)}`) : " ✓ cuadra"}
+        </div>
+      )}
       {cartasPorte && (
         <div className="mb8">
           <div className="tsm txt2 mb4" style={{ fontWeight: 700 }}>🔗 Facturas y cartas porte de Facturama sin ligar que le cuadran</div>
@@ -5870,27 +5886,93 @@ function puntajeCfdi(r, t, vehicles) {
 // Liga un CFDI registrado por el bot (tr:cartas_porte) a un servicio, igual que
 // aplicar_cfdi_a_viaje del bot: factura = facturado con folio/UUID/metodo y el
 // monto si no tenia; carta porte = su folio en docNum. Devuelve true si quedo.
-async function ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien }) {
-  const ok1 = await onUpdateCP(r.id, { tc_trip_id: t.id, ligadoPor: `${quien || "App"} (app) ${today()}` });
+// Una factura puede amparar VARIOS servicios (dos de $5,000 en una de $10,000).
+// En tr:cartas_porte: tc_trip_ids = todos; tc_trip_id = el primero, para que el
+// bot (que solo lee tc_trip_id) la siga viendo como ligada.
+const viajesDeCfdi = r => [...new Set([...(Array.isArray(r?.tc_trip_ids) ? r.tc_trip_ids : []), r?.tc_trip_id].filter(Boolean))];
+
+// Cuánto de la factura ya amparan sus servicios ligados (suma de subtotales).
+function amparoFactura(r, trips) {
+  const ids = viajesDeCfdi(r);
+  const ligados = ids.map(id => (trips || []).find(x => x.id === id)).filter(Boolean);
+  const suma = ligados.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const sub = Number(r.subtotal) || 0;
+  return { ids, ligados, suma, sub, falta: sub > 0 ? Math.round((sub - suma) * 100) / 100 : 0 };
+}
+
+// Factura ligada pero que todavía no cuadra: sus servicios suman menos que ella.
+const facturaIncompleta = (r, trips) => r.tipo === "I" && !r.tc_out_id && viajesDeCfdi(r).length > 0 && amparoFactura(r, trips).falta > 1;
+
+// Liga una factura a uno o varios servicios de una sola vez.
+async function ligarFacturaAViajes(r, nuevos, { trips, onUpdate, onUpdateCP, quien }) {
+  const previos = viajesDeCfdi(r);
+  const ids = [...new Set([...previos, ...nuevos.map(t => t.id)])];
+  const ok1 = await onUpdateCP(r.id, { tc_trip_id: ids[0], tc_trip_ids: ids, ligadoPor: `${quien || "App"} (app) ${today()}` });
   if (ok1 === false) return false;
-  if (r.tipo === "I") {
+  const sub = Number(r.subtotal) || 0;
+  const tot = Number(r.total) || 0;
+  const ret = tot ? Math.abs(tot - sub * 1.12) < Math.abs(tot - sub * 1.16) : null;
+  const todos = ids.map(id => nuevos.find(x => x.id === id) || (trips || []).find(x => x.id === id)).filter(Boolean);
+  const conMonto = todos.filter(x => Number(x.amount) > 0);
+  const sinMonto = todos.filter(x => !(Number(x.amount) > 0));
+  // Si solo a uno le falta monto, se le pone lo que le falta a la factura.
+  const resto = sub - conMonto.reduce((s, x) => s + Number(x.amount), 0);
+  const montoPara = sinMonto.length === 1 && resto > 1 ? Math.round(resto * 100) / 100 : 0;
+  for (const t of nuevos) {
     const patch = {};
     const bs = t.billingStatus || "sin_facturar";
     if (["sin_facturar", "sin_factura"].includes(bs)) {
-      patch.billingStatus = "facturado"; patch.invoiceNumber = String(r.folio);
+      patch.billingStatus = "facturado"; patch.invoiceNumber = String(r.folio); patch.sinFactura = false;
       if (r.uuid) patch.invoiceUuid = r.uuid;
       if (["PPD", "PUE"].includes(r.metodo_pago)) patch.metodoPago = r.metodo_pago;
+      if (ret !== null) patch.ivaRetention = ret;
     } else if (!t.invoiceNumber) patch.invoiceNumber = String(r.folio);
-    const sub = Number(r.subtotal) || 0;
-    if (sub > 0 && !(Number(t.amount) > 0)) {
-      patch.amount = sub; patch.amountBase = sub; patch.sinFactura = false;
-      const tot = Number(r.total) || 0;
-      if (tot) patch.ivaRetention = Math.abs(tot - sub * 1.12) < Math.abs(tot - sub * 1.16);
+    if (!(Number(t.amount) > 0) && montoPara && sinMonto[0].id === t.id) {
+      patch.amount = montoPara; patch.amountBase = montoPara; patch.sinFactura = false;
+      if (ret !== null) patch.ivaRetention = ret;
     }
     if (Object.keys(patch).length) await onUpdate(t.id, patch);
-    if (sub > 0 && Number(t.amount) > 0 && Math.abs(sub - Number(t.amount)) > 1)
-      alert(`Ojo: la factura es por ${fmt$(sub)} de subtotal y el servicio tiene ${fmt$(t.amount)}. Revisa cuál queda.`);
-  } else if (r.folio) {
+  }
+  const suma = conMonto.reduce((s, x) => s + Number(x.amount), 0) + montoPara;
+  if (sub > 0 && sinMonto.length <= (montoPara ? 1 : 0) && Math.abs(sub - suma) > 1)
+    alert(todos.length > 1
+      ? `Ojo: la factura ${r.folio} es por ${fmt$(sub)} de subtotal y sus ${todos.length} servicios suman ${fmt$(suma)}. ${suma < sub ? `Faltan ${fmt$(sub - suma)}: puedes ligarle otro servicio o revisar los montos.` : "Revisa los montos."}`
+      : `Ojo: la factura es por ${fmt$(sub)} de subtotal y el servicio tiene ${fmt$(suma)}. Si la factura ampara más servicios, lígale los demás.`);
+  else if (sinMonto.length > (montoPara ? 1 : 0))
+    alert(`Quedaron ${sinMonto.length - (montoPara ? 1 : 0)} servicio(s) sin monto en la factura ${r.folio}: ponles su monto para que cuadre con ${fmt$(sub)}.`);
+  return true;
+}
+
+// Servicios que pueden ir en una factura suelta: mismo cliente, sin factura,
+// fecha cercana; y la combinación de 1 a 4 que suma exacto el subtotal.
+function serviciosParaFactura(r, trips) {
+  const rec = normTxt(r.receptor);
+  const fr = String(r.fecha_servicio || r.fecha || "").slice(0, 10);
+  const ya = new Set(viajesDeCfdi(r));
+  const lista = (trips || []).filter(t => !ya.has(t.id) && !t.invoiceNumber && ["sin_facturar", "sin_factura", undefined, ""].includes(t.billingStatus))
+    .map(t => {
+      const cl = normTxt(t.client);
+      const mismo = cl && rec && (rec.includes(cl) || cl.includes(rec.split(" ")[0]));
+      const dias = fr && t.date ? Math.abs((new Date(t.date + "T12:00:00") - new Date(fr + "T12:00:00")) / 864e5) : 99;
+      return { t, mismo, dias };
+    }).filter(x => x.mismo && x.dias <= 31).sort((a, b) => a.dias - b.dias).slice(0, 12).map(x => x.t);
+  const meta = amparoFactura(r, trips).falta || Number(r.subtotal) || 0;
+  let exacta = null;
+  const montos = lista.filter(t => Number(t.amount) > 0);
+  const buscar = (i, elegidos, suma) => {
+    if (exacta || elegidos.length > 4 || suma > meta + 1) return;
+    if (elegidos.length && Math.abs(suma - meta) <= 1) { exacta = elegidos; return; }
+    for (let j = i; j < montos.length; j++) buscar(j + 1, [...elegidos, montos[j]], suma + Number(montos[j].amount));
+  };
+  if (meta > 0) buscar(0, [], 0);
+  return { lista, exacta: exacta ? exacta.map(t => t.id) : [] };
+}
+
+async function ligarCfdiAViaje(r, t, { trips, onUpdate, onUpdateCP, quien }) {
+  if (r.tipo === "I") return ligarFacturaAViajes(r, [t], { trips, onUpdate, onUpdateCP, quien });
+  const ok1 = await onUpdateCP(r.id, { tc_trip_id: t.id, ligadoPor: `${quien || "App"} (app) ${today()}` });
+  if (ok1 === false) return false;
+  if (r.folio) {
     const previo = String(t.docNum || "").trim(); const f = String(r.folio);
     const doc = !previo || previo === "0" ? f : foliosDe(previo).includes(folioCP(f)) ? previo : `${previo}, ${f}`;
     await onUpdate(t.id, { docNum: doc, cpPendiente: false, sinCartaPorte: false });
@@ -5900,20 +5982,23 @@ async function ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien }) {
 
 // Para un servicio de la cobranza: facturas y cartas porte sin ligar que le
 // pueden corresponder, las mas probables primero (cliente, monto, fecha).
-function cfdisParaServicio(t, cartasPorte, vehicles) {
+function cfdisParaServicio(t, cartasPorte, vehicles, trips) {
   const cl = normTxt(t.client);
   const amt = Number(t.amount) || 0;
-  return (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id).map(r => {
+  return (cartasPorte || []).filter(r => (!r.tc_trip_id && !r.tc_out_id) || (facturaIncompleta(r, trips) && !viajesDeCfdi(r).includes(t.id))).map(r => {
     const fr = String(r.fecha_servicio || r.fecha || "").slice(0, 10);
     const dias = fr && t.date ? Math.abs((new Date(t.date + "T12:00:00") - new Date(fr + "T12:00:00")) / 864e5) : 99;
     const rec = normTxt(r.receptor);
     let s = 0; const por = [];
     if (r.tipo === "I") {
       if (cl && rec && (rec.includes(cl) || cl.includes(rec.split(" ")[0]))) { s += 3; por.push("cliente"); }
-      const sub = Number(r.subtotal) || 0;
-      if (sub && amt && Math.abs(sub - amt) <= 1) { s += 4; por.push("mismo monto"); }
+      const am = amparoFactura(r, trips);
+      const sub = am.ids.length ? am.falta : (Number(r.subtotal) || 0);
+      if (am.ids.length) por.push(`ya ampara ${am.ids.length}, faltan ${fmt$(am.falta)}`);
+      if (sub && amt && Math.abs(sub - amt) <= 1) { s += 4; por.push(am.ids.length ? "completa la factura" : "mismo monto"); }
+      else if (!am.ids.length && sub && amt && amt < sub - 1) { s += 1; por.push("puede ir junto con otros"); }
       if (dias <= 7) { s += dias <= 1 ? 2 : 1; por.push(dias <= 1 ? "misma fecha" : "fecha cercana"); }
-      if (!s || (!por.includes("cliente") && !por.includes("mismo monto"))) return null;
+      if (!s || !por.some(p => ["cliente", "mismo monto", "completa la factura"].includes(p))) return null;
     } else {
       if (t.sinCartaPorte || dias > 2) return null;
       const p = puntajeCfdi(r, t, vehicles || []);
@@ -5942,7 +6027,7 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   const porCobrarPUE = trips.filter(t => t.billingStatus === "facturado" && t.metodoPago !== "PPD");
   const efectivo = recientes.filter(t => esSinFactura(t) && t.billingStatus !== "pagado" && Number(t.amount) > 0);
   // 3) Cartas porte / facturas que llegaron de Facturama sin servicio
-  const sueltas = (cartasPorte || []).filter(r => !r.tc_trip_id && !r.tc_out_id
+  const sueltas = (cartasPorte || []).filter(r => ((!r.tc_trip_id && !r.tc_out_id) || facturaIncompleta(r, trips))
     && String(r.fecha_servicio || r.fecha || "") >= INICIO_OPERACIONES)
     .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
   // 4) Unidades que se movieron sin servicio (el bot ya le preguntó al chofer)
@@ -5960,7 +6045,17 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
   const cobranza = Object.values(porCliente).sort((a, b) => b.total - a.total);
 
   const ligar = async (r, t) => {
-    if (await ligarCfdiAViaje(r, t, { onUpdate, onUpdateCP, quien })) { setLigando(null); setEleccion(""); }
+    if (await ligarCfdiAViaje(r, t, { trips, onUpdate, onUpdateCP, quien })) { setLigando(null); setEleccion(""); }
+  };
+  // Factura que ampara varios servicios: palomitas por factura (r.id -> ids).
+  const [marcados, setMarcados] = useState({});
+  const ligarVarios = async (r, ids) => {
+    const ts = ids.map(id => trips.find(x => x.id === id)).filter(Boolean);
+    if (!ts.length) return;
+    const suma = ts.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const am = amparoFactura(r, trips);
+    if (!confirm(`¿Ligar la factura ${r.folio} (${fmt$(am.sub)} sin IVA) a ${ts.length} servicio(s)?\n\n${ts.map(resumen).join("\n")}\n\nSuman ${fmt$(suma)}${am.ids.length ? ` + ${fmt$(am.suma)} que ya amparaba` : ""}.`)) return;
+    if (await ligarFacturaAViajes(r, ts, { trips, onUpdate, onUpdateCP, quien })) setMarcados(p => ({ ...p, [r.id]: undefined }));
   };
   const ligarTercerizado = async (r, o) => {
     const ok1 = await onUpdateCP(r.id, { tc_out_id: o.id, ligadoPor: `${quien || "Operaciones"} (app) ${today()}` });
@@ -6026,15 +6121,44 @@ function MiDia({ trips, outsourced, drivers, vehicles, razones, clients, tarifar
       {tarjeta({ titulo: "📄 Cartas porte y facturas de Facturama sin ligar a un servicio", n: sueltas.length, color: "var(--blue, #2563eb)", clave: "cfdi", children: (<>
         <div className="fcol gap8">
           {sueltas.slice(0, 30).map(r => {
-            const cands = recientes.filter(t => r.tipo === "I" || !t.sinCartaPorte).map(t => ({ t, ...puntajeCfdi(r, t, vehicles) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s).slice(0, 4);
+            const esFact = r.tipo === "I";
+            const am = esFact ? amparoFactura(r, trips) : null;
+            const pf = esFact ? serviciosParaFactura(r, trips) : null;
+            const sel = esFact ? (marcados[r.id] || pf.exacta) : [];
+            const sumaSel = esFact ? sel.reduce((s, id) => s + (Number((trips.find(x => x.id === id) || {}).amount) || 0), 0) : 0;
+            const meta = esFact ? (am.ids.length ? am.falta : am.sub) : 0;
+            const togg = id => setMarcados(p => { const cur = p[r.id] || pf.exacta; return { ...p, [r.id]: cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id] }; });
+            const cands = esFact && pf.lista.length ? [] : recientes.filter(t => r.tipo === "I" || !t.sinCartaPorte).map(t => ({ t, ...puntajeCfdi(r, t, vehicles) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s).slice(0, 4);
             return (
               <div key={r.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-                <div style={{ fontWeight: 700 }}>{r.tipo === "I" ? "🧾 Factura" : "📄 Carta porte"} {r.folio} · {r.receptor || "?"}{Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)} sin IVA` : ""}</div>
+                <div style={{ fontWeight: 700 }}>{esFact ? "🧾 Factura" : "📄 Carta porte"} {r.folio} · {r.receptor || "?"}{Number(r.subtotal) > 1 ? ` · ${fmt$(r.subtotal)} sin IVA` : ""}</div>
+                {esFact && am.ids.length > 0 && (
+                  <div className="tsm" style={{ color: "var(--amber)" }}>Ya ampara {am.ids.length} servicio(s): {am.ligados.map(x => `${fmtDate(x.date)} ${fmt$(Number(x.amount) || 0)}`).join(" + ")} = {fmt$(am.suma)} · faltan {fmt$(am.falta)}</div>
+                )}
                 <div className="tsm txt2">
                   {r.fecha_servicio ? `Servicio ${fmtDate(r.fecha_servicio)}${r.hora_salida ? " " + r.hora_salida : ""} · ` : `Emitida ${fmtDate(r.fecha)} · `}
                   {(r.origen || r.origen_cp) ? `${lugar(r, "origen")} → ${lugar(r, "destino")} · ` : ""}
                   {r.vehiculo || r.placa ? `🚚 ${r.vehiculo || r.placa} · ` : ""}{r.operador ? `👤 ${r.operador}` : ""}
                 </div>
+                {esFact && pf.lista.length > 0 && (
+                  <div className="mt4" style={{ background: "var(--bg3)", borderRadius: 8, padding: 8 }}>
+                    <div className="tsm txt2 mb4">Palomea los servicios que ampara esta factura{pf.exacta.length > 1 ? " (ya marqué los que suman exacto)" : pf.exacta.length === 1 ? " (ya marqué el que tiene el mismo monto)" : ""}:</div>
+                    <div className="fcol gap4">
+                      {pf.lista.map(t => (
+                        <label key={t.id} className="flex aic gap8 tsm" style={{ cursor: "pointer" }}>
+                          <input type="checkbox" checked={sel.includes(t.id)} onChange={() => togg(t.id)} />
+                          <span>{resumen(t)} · <b>{Number(t.amount) > 0 ? fmt$(t.amount) : "sin monto"}</b></span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex aic jb wrap gap8 mt8">
+                      <span className="tsm" style={{ fontWeight: 700, color: !sel.length ? "var(--txt2)" : Math.abs(sumaSel - meta) <= 1 ? "var(--green)" : "var(--amber)" }}>
+                        {sel.length ? `${sel.length} servicio(s): ${fmt$(sumaSel)} de ${fmt$(meta)}${Math.abs(sumaSel - meta) <= 1 ? " ✓ cuadra" : sumaSel < meta ? ` · faltan ${fmt$(meta - sumaSel)}` : ` · se pasan ${fmt$(sumaSel - meta)}`}` : "Ningún servicio marcado"}
+                      </span>
+                      <button className="btn btn-a btn-sm" disabled={!sel.length} onClick={() => ligarVarios(r, sel)}>🔗 Ligar a {sel.length || ""} servicio{sel.length === 1 ? "" : "s"}</button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex gap4 wrap mt4">
                   {cands.map(({ t, por }) => (
                     <button key={t.id} className="btn btn-gr btn-sm" style={{ whiteSpace: "normal", textAlign: "left", maxWidth: "100%" }} title={"Cuadra por: " + por.join(", ")} onClick={() => ligar(r, t)}>
