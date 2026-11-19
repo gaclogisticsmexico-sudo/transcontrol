@@ -2695,6 +2695,10 @@ function IVAToggles({ sinFactura, retention, onToggleSF, onToggleRet }) {
 function BillingPanel({ trip, onUpdate }) {
   const [invNum, setInvNum] = useState(trip.invoiceNumber || "");
   const [pendingMethod, setPendingMethod] = useState(false); // show PPD/PUE after PDF upload
+  // Fecha en que el cliente pagó (19-nov-2026, Alan): antes todo pago quedaba
+  // con la fecha del día en que se picaba el botón.
+  const [fechaPago, setFechaPago] = useState(today());
+  const fechaDePago = () => (/^\d{4}-\d{2}-\d{2}$/.test(fechaPago) && fechaPago <= today() ? fechaPago : today());
   const save = patch => onUpdate(trip.id, patch);
   const bs = trip.billingStatus || "sin_facturar";
   const mp = trip.metodoPago || "";
@@ -2712,8 +2716,8 @@ function BillingPanel({ trip, onUpdate }) {
   const alSubirComprobante = () => {
     if (bs === "pagado") return;
     const aviso = bs === "sin_facturar" ? "\n(Ojo: todavía no está facturado.)" : mp === "PPD" ? "\n(Es PPD: después sube el complemento de pago.)" : "";
-    if (confirm(`Comprobante guardado. ¿Marco el servicio como PAGADO hoy?${aviso}`))
-      save({ billingStatus: "pagado", paidDate: today(), ...(bs === "sin_factura" ? { paymentMethod: trip.paymentMethod || "efectivo" } : {}) });
+    if (confirm(`Comprobante guardado. ¿Marco el servicio como PAGADO con fecha ${fmtDate(fechaDePago())}?${aviso}`))
+      save({ billingStatus: "pagado", paidDate: fechaDePago(), ...(bs === "sin_factura" ? { paymentMethod: trip.paymentMethod || "efectivo" } : {}) });
   };
   const alBorrarComprobante = () => {
     if (bs === "pagado" && confirm("¿También regreso el servicio a POR COBRAR?"))
@@ -2762,6 +2766,13 @@ function BillingPanel({ trip, onUpdate }) {
         {mp && <span className="tsm txt2">Método SAT: <strong>{mp}</strong></span>}
       </div>
 
+      {/* Fecha del pago: la usan todos los botones y comprobantes que marcan PAGADO */}
+      {bs !== "pagado" && (
+        <Field label="Fecha del pago" style={{ marginBottom: 12 }}>
+          <input type="date" value={fechaPago} max={today()} onChange={e => setFechaPago(e.target.value)} style={{ maxWidth: 200 }} />
+        </Field>
+      )}
+
       {/* ── SIN FACTURAR: subir factura PDF dispara PPD/PUE ── */}
       {(bs === "sin_facturar" || bs === "sin_factura") && (
         <div className="fcol gap8">
@@ -2799,7 +2810,7 @@ function BillingPanel({ trip, onUpdate }) {
 
           <div className="flex gap4 wrap">
             <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_factura", sinFactura: true, ivaRetention: false })}>💵 Sin factura / Efectivo</button>
-            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), paymentMethod: "efectivo", sinFactura: true, ivaRetention: false })}>✓ Pagado en efectivo</button>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: fechaDePago(), paymentMethod: "efectivo", sinFactura: true, ivaRetention: false })}>✓ Pagado en efectivo</button>
           </div>
         </div>
       )}
@@ -2816,7 +2827,7 @@ function BillingPanel({ trip, onUpdate }) {
             </div>
           </div>
           <div className="flex gap4 wrap">
-            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today() })}>✓ Marcar pagado</button>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: fechaDePago() })}>✓ Marcar pagado</button>
             <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
           </div>
         </div>
@@ -2833,11 +2844,11 @@ function BillingPanel({ trip, onUpdate }) {
                 <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact onLoad={alSubirComprobante} onDelete={alBorrarComprobante} /></div>
               <div><div className="tsm txt2 mb4">Complemento de pago SAT</div>
                 <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact
-                  onLoad={() => save({ billingStatus: "pagado", paidDate: trip.paidDate || today(), complementoSubido: true })} /></div>
+                  onLoad={() => save({ billingStatus: "pagado", paidDate: trip.paidDate || fechaDePago(), complementoSubido: true })} /></div>
             </div>
           </div>
           <div className="flex gap4 wrap">
-            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today(), complementoSubido: true })}>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: fechaDePago(), complementoSubido: true })}>
               ✓ Marcar pagado c/Complemento
             </button>
             <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
@@ -2852,10 +2863,10 @@ function BillingPanel({ trip, onUpdate }) {
             <div style={{ fontWeight: 700, marginBottom: 4 }}>💳 Pendiente: Comprobante de pago</div>
             <div className="tsm txt2 mb4">Comprobante de pago del cliente</div>
             <PhotoBtn label="Subir comprobante" photoKey={[trip.id, "payment"]} compact
-              onLoad={() => save({ billingStatus: "pagado", paidDate: today() })} onDelete={alBorrarComprobante} />
+              onLoad={() => save({ billingStatus: "pagado", paidDate: fechaDePago() })} onDelete={alBorrarComprobante} />
           </div>
           <div className="flex gap4 wrap">
-            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: today() })}>✓ Marcar pagado</button>
+            <button className="btn btn-gr btn-sm" onClick={() => save({ billingStatus: "pagado", paidDate: fechaDePago() })}>✓ Marcar pagado</button>
             <button className="btn btn-g btn-sm" onClick={() => save({ billingStatus: "sin_facturar", metodoPago: "" })}>↩ Revertir</button>
           </div>
         </div>
@@ -2868,7 +2879,10 @@ function BillingPanel({ trip, onUpdate }) {
             <div style={{ fontWeight: 700, color: "var(--green)", marginBottom: 4 }}>
               ✓ {mp === "PPD" ? (ppdSinComplemento ? "Pagado — falta el complemento de pago" : "Pagado con complemento emitido") : "Pagado"}
             </div>
-            {trip.paidDate && <div className="tsm txt2">Fecha: {fmtDate(trip.paidDate)}</div>}
+            <div className="flex aic gap8 tsm txt2">Fecha del pago:
+              <input type="date" value={trip.paidDate || ""} max={today()} style={{ maxWidth: 170 }}
+                onChange={e => { const v = e.target.value; if (/^\d{4}-\d{2}-\d{2}$/.test(v) && v <= today()) save({ paidDate: v }); }} />
+            </div>
             {ppdSinComplemento && (
               <div className="mt8"><div className="tsm txt2 mb4">Complemento de pago SAT</div>
                 <PhotoBtn label="Subir complemento" photoKey={[trip.id, "complemento"]} compact onLoad={() => save({ complementoSubido: true })} />
