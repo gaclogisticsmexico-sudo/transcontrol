@@ -5146,6 +5146,11 @@ function AdminComplementos({ trips, onUpdate }) {
   const [showDone, setShowDone] = useState(false);
   const totalPending = pending.reduce((s, t) => s + totalTrip(t), 0);
   const save = (id, patch) => onUpdate(id, patch);
+  // Fecha en que pagó el cliente, por servicio (19-nov-2026): default la que ya
+  // tenga o hoy; antes "Marcar pagado" ponía siempre el día del clic.
+  const [fechas, setFechas] = useState({});
+  const fechaOk = v => /^\d{4}-\d{2}-\d{2}$/.test(v || "") && v <= today();
+  const fechaDe = t => (fechaOk(fechas[t.id]) ? fechas[t.id] : t.paidDate || today());
   return (
     <div className="ap">
       <div className="flex aic jb mb12">
@@ -5175,11 +5180,21 @@ function AdminComplementos({ trips, onUpdate }) {
               </div>
               <div className="flex aic gap8 wrap">
                 <div>
+                  <div className="tsm txt2 mb4">Fecha del pago</div>
+                  <input type="date" value={fechaDe(t)} max={today()} style={{ maxWidth: 170 }}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setFechas(f => ({ ...f, [t.id]: v }));
+                      // ya pagado: la fecha se corrige al momento
+                      if (t.billingStatus === "pagado" && fechaOk(v)) save(t.id, { paidDate: v });
+                    }} />
+                </div>
+                <div>
                   <div className="tsm txt2 mb4">Subir complemento de pago</div>
                   <PhotoBtn label="📎 Complemento SAT" photoKey={[t.id, "complemento"]} compact
-                    onLoad={() => save(t.id, { billingStatus: "pagado", paidDate: t.paidDate || today(), complementoSubido: true })} />
+                    onLoad={() => save(t.id, { billingStatus: "pagado", paidDate: fechaDe(t), complementoSubido: true })} />
                 </div>
-                <button className="btn btn-gr btn-sm mt12" onClick={() => save(t.id, { billingStatus: "pagado", paidDate: t.paidDate || today(), complementoSubido: true })}>
+                <button className="btn btn-gr btn-sm mt12" onClick={() => save(t.id, { billingStatus: "pagado", paidDate: fechaDe(t), complementoSubido: true })}>
                   ✓ Marcar pagado c/Complemento
                 </button>
               </div>
@@ -5196,7 +5211,10 @@ function AdminComplementos({ trips, onUpdate }) {
           <div>
             <div style={{ fontWeight: 700 }}>{t.origin} → {t.destination}</div>
             <div className="tsm txt2">{fmtDate(t.date)} · {t.client} · {t.invoiceNumber}</div>
-            <div className="tsm txt2">Pagado: {fmtDate(t.paidDate)}</div>
+            <div className="flex aic gap8 tsm txt2">Pagado:
+              <input type="date" value={t.paidDate || ""} max={today()} style={{ maxWidth: 170 }}
+                onChange={e => { const v = e.target.value; if (fechaOk(v)) save(t.id, { paidDate: v }); }} />
+            </div>
           </div>
           <div className="flex gap4 aic">
             <span className="badge bg">✓ Complemento emitido</span>
